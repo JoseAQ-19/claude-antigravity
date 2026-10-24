@@ -1,0 +1,18 @@
+claude-antigravity
+Copyright 2026 Jose Ariza Quintero (@JoseAQ-19)
+
+This product is an independent open-source software project licensed under
+the Apache License, Version 2.0.
+
+Architectural Inspiration:
+  Command ergonomics, background job lifecycle conventions, and stop-review-gate
+  workflow patterns were inspired by `openai/codex-plugin-cc`
+  (https://github.com/openai/codex-plugin-cc, Copyright 2026 OpenAI, licensed
+  under the Apache License, Version 2.0). All source code in this repository was
+  written from scratch for Google Antigravity 2.0 Desktop and the `agy` CLI.
+
+Trademark Disclaimer:
+  This project is NOT affiliated with, endorsed by, sponsored by, or supported by
+  Google LLC or Anthropic PBC. "Google", "Antigravity", and "Gemini" are
+  trademarks of Google LLC. "Claude" and "Claude Code" are trademarks of
+  Anthropic PBC.
