@@ -29,7 +29,18 @@ function shellEscape(value) {
 
 function appendEnvVar(name, value) {
   if (!process.env.CLAUDE_ENV_FILE || value == null || value === "") return;
-  fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ${name}=${shellEscape(value)}\n`, "utf8");
+  const envFile = process.env.CLAUDE_ENV_FILE;
+  const line = `export ${name}=${shellEscape(value)}`;
+  const prefix = `export ${name}=`;
+  if (fs.existsSync(envFile)) {
+    const existingLines = fs.readFileSync(envFile, "utf8").split(/\r?\n/).filter(Boolean);
+    if (existingLines.includes(line)) return;
+    const filtered = existingLines.filter((l) => !l.startsWith(prefix));
+    filtered.push(line);
+    fs.writeFileSync(envFile, `${filtered.join("\n")}\n`, "utf8");
+    return;
+  }
+  fs.appendFileSync(envFile, `${line}\n`, "utf8");
 }
 
 function handleSessionStart(input) {

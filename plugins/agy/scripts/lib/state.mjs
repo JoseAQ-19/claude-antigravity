@@ -168,6 +168,18 @@ export function setConfig(cwd, key, value) {
   return saveState(cwd, state);
 }
 
+export function getLatestConversationId(cwd) {
+  const state = loadState(cwd);
+  if (state.config?.latestConversationId) return state.config.latestConversationId;
+  const fromJob = state.jobs.find((j) => j.conversationId);
+  return fromJob?.conversationId ?? null;
+}
+
+export function setLatestConversationId(cwd, conversationId) {
+  if (!conversationId) return loadState(cwd);
+  return setConfig(cwd, "latestConversationId", conversationId);
+}
+
 export function appendJobLog(logFile, message) {
   if (!logFile || !message) return;
   fs.appendFileSync(logFile, `[${nowIso()}] ${String(message).trim()}\n`, "utf8");

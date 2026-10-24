@@ -68,6 +68,15 @@ test("session-lifecycle-hook SessionStart writes AGY_COMPANION_* exports to CLAU
     assert.match(content, /export AGY_COMPANION_SESSION_ID='sess-999'/);
     assert.ok(content.includes("AGY_COMPANION_TRANSCRIPT_PATH="));
     assert.ok(content.includes("sess-999.jsonl"));
+
+    // Run SessionStart a second time (simulating resume/compaction) and verify no duplicate lines are appended
+    spawnSync(process.execPath, [LIFECYCLE_HOOK, "SessionStart"], {
+      input: hookInput,
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_ENV_FILE: envFile, CLAUDE_PLUGIN_DATA: tmpDir }
+    });
+    const secondContent = fs.readFileSync(envFile, "utf8");
+    assert.equal(secondContent, content, "CLAUDE_ENV_FILE exports must be deduplicated across resumes");
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

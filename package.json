@@ -1,16 +1,16 @@
 {
-  "name": "claude-antigravity-bridge",
-  "version": "1.0.0",
-  "description": "Bridge Claude Code directly with Google Antigravity 2.0 Desktop IDE (Live Connect RPC + agentapi) and agy CLI — task delegation, code reviews, and live .jsonl conversation transfer.",
+  "name": "claude-antigravity",
+  "version": "1.1.0",
+  "description": "Bidirectional live IDE bridge, multimodal video/audio eyes, parallel git worktrees, and cross-model reviews between Claude Code and Google Antigravity 2.0 Desktop + agy CLI.",
   "license": "Apache-2.0",
   "author": "Jose Ariza Quintero (@JoseAQ-19)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/JoseAQ-19/claude-antigravity-bridge.git"
+    "url": "https://github.com/JoseAQ-19/claude-antigravity.git"
   },
-  "homepage": "https://github.com/JoseAQ-19/claude-antigravity-bridge#readme",
+  "homepage": "https://github.com/JoseAQ-19/claude-antigravity#readme",
   "bugs": {
-    "url": "https://github.com/JoseAQ-19/claude-antigravity-bridge/issues"
+    "url": "https://github.com/JoseAQ-19/claude-antigravity/issues"
   },
   "keywords": [
     "claude-code",
@@ -19,7 +19,9 @@
     "google-antigravity",
     "agy",
     "gemini",
-    "agent-handoff",
+    "multimodal",
+    "video-analysis",
+    "git-worktree",
     "session-transfer",
     "agent-skills"
   ],

@@ -52,7 +52,7 @@ test("git helpers collect working-tree review context", () => {
     fs.writeFileSync(path.join(repo, "app.js"), "console.log('v2');\n");
     const summary = getGitSummary(repo);
     assert.equal(summary.isGitRepo, true);
-    assert.match(summary.statusShort, /app\.js/);
+    assert.equal(summary.statusShort, " M app.js", "Must preserve leading unstaged space column on line 1");
 
     const ctx = collectReviewContext(repo, { scope: "working-tree" });
     assert.equal(ctx.targetLabel, "working tree changes");

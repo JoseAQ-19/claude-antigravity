@@ -7,20 +7,40 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export function runReleaseAudit(rootDir = ROOT) {
   const errors = [];
 
+  const expectedCommands = [
+    "setup",
+    "transfer",
+    "pull",
+    "rescue",
+    "race",
+    "media",
+    "review",
+    "adversarial-review",
+    "review-plan",
+    "quota",
+    "undo",
+    "fork",
+    "sync-memory",
+    "status",
+    "result",
+    "cancel"
+  ];
+
   const requiredFiles = [
     "package.json",
     ".claude-plugin/marketplace.json",
     "plugins/agy/.claude-plugin/plugin.json",
     "plugins/agy/hooks/hooks.json",
     "plugins/agy/scripts/agy-companion.mjs",
-    "skills/antigravity-bridge/SKILL.md",
+    "skills/claude-antigravity/SKILL.md",
     "LICENSE",
     "NOTICE",
     "SECURITY.md",
     "CONTRIBUTING.md",
     "CHANGELOG.md",
     "README.md",
-    ".github/workflows/ci.yml"
+    ".github/workflows/ci.yml",
+    ...expectedCommands.map((cmd) => `plugins/agy/commands/${cmd}.md`)
   ];
 
   for (const rel of requiredFiles) {
@@ -47,8 +67,8 @@ export function runReleaseAudit(rootDir = ROOT) {
     );
   }
 
-  if (marketplace.name === "antigravity-cc") {
-    errors.push("Marketplace name 'antigravity-cc' collides with existing community repos; expected 'antigravity-live'.");
+  if (marketplace.name !== "claude-antigravity" || pkg.name !== "claude-antigravity") {
+    errors.push(`Expected canonical identity 'claude-antigravity', got pkg=${pkg.name}, marketplace=${marketplace.name}`);
   }
 
   // Scan all files for accidental personal paths or machine-specific UUIDs
@@ -82,7 +102,13 @@ export function runReleaseAudit(rootDir = ROOT) {
 
   walk(rootDir);
 
-  return { ok: errors.length === 0, errors, version: pkg.version, marketplaceName: marketplace.name };
+  return {
+    ok: errors.length === 0,
+    errors,
+    version: pkg.version,
+    marketplaceName: marketplace.name,
+    commandCount: expectedCommands.length
+  };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -94,5 +120,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
     process.exit(1);
   }
-  console.log(`Release audit PASSED (v${result.version}, marketplace=${result.marketplaceName}).`);
+  console.log(
+    `Release audit PASSED (v${result.version}, marketplace=${result.marketplaceName}, commands=${result.commandCount}).`
+  );
 }

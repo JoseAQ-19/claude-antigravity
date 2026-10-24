@@ -16,6 +16,30 @@ function runGit(cwd, args, maxBuffer = 8 * 1024 * 1024) {
   };
 }
 
+export function unquoteGitPath(rawPath) {
+  const trimmed = String(rawPath ?? "").trim();
+  if (!trimmed.startsWith('"') || !trimmed.endsWith('"')) return trimmed;
+  const inner = trimmed.slice(1, -1);
+  const bytes = [];
+  for (let i = 0; i < inner.length; i += 1) {
+    if (inner[i] === "\\" && i + 1 < inner.length) {
+      const oct = inner.slice(i + 1, i + 4);
+      if (/^[0-7]{3}$/.test(oct)) {
+        bytes.push(parseInt(oct, 8));
+        i += 3;
+        continue;
+      }
+      i += 1;
+      const esc = inner[i];
+      const map = { n: 10, r: 13, t: 9, '"': 34, "\\": 92 };
+      bytes.push(map[esc] ?? esc.charCodeAt(0));
+    } else {
+      bytes.push(...Buffer.from(inner[i], "utf8"));
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
 export function getGitSummary(cwd) {
   const check = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
   if (!check.ok || check.stdout.trim() !== "true") {
@@ -23,13 +47,14 @@ export function getGitSummary(cwd) {
   }
   const repoRoot = resolveWorkspaceRoot(cwd);
   const branchRes = runGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const statusRes = runGit(repoRoot, ["status", "--short", "--untracked-files=all"]);
+  const statusRes = runGit(repoRoot, ["-c", "core.quotepath=false", "status", "--short", "--untracked-files=all"]);
   const diffStatRes = runGit(repoRoot, ["diff", "--stat", "HEAD"]);
   return {
     isGitRepo: true,
     repoRoot,
     branch: branchRes.ok ? branchRes.stdout.trim() : "HEAD",
-    statusShort: statusRes.stdout.trim(),
+    // Preserve leading column of line 1 (e.g. " M file.js") while trimming trailing newlines
+    statusShort: statusRes.stdout.replace(/[\r\n]+$/, ""),
     diffStat: diffStatRes.stdout.trim()
   };
 }

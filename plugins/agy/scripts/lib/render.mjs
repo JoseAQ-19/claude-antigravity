@@ -1,3 +1,11 @@
+function escapeMarkdownCell(val) {
+  return String(val ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function renderSetupReport(report) {
   const lines = [
     `# Antigravity Companion Setup (${report.ready ? "READY" : "ACTION NEEDED"})`,
@@ -30,6 +38,11 @@ export function renderTurnResult(result, meta = {}) {
     result.conversationId ? `- **Antigravity Conversation ID:** \`${result.conversationId}\`` : null,
     result.conversationId ? `- **Resume in CLI:** \`agy --conversation ${result.conversationId}\`` : null,
     meta.jobId ? `- **Job ID:** \`${meta.jobId}\`` : null,
+    meta.worktreePatchPath
+      ? `- **Isolated Worktree Patch:** \`${meta.worktreePatchPath}\` *(apply cleanly via \`/agy:result ${meta.jobId} --apply-worktree\`)*`
+      : null,
+    meta.worktreeDiffStat ? `- **Worktree Diff Summary:** \`${meta.worktreeDiffStat}\`` : null,
+    meta.mediaReportPath ? `- **Full Media Transcript Archive:** \`${meta.mediaReportPath}\`` : null,
     result.touchedFiles?.length
       ? `- **Touched Files (${result.touchedFiles.length}):** ${result.touchedFiles.map((f) => `\`${f}\``).join(", ")}`
       : null,
@@ -46,6 +59,7 @@ export function renderTransferResult(payload) {
     `- **Antigravity Conversation ID:** \`${payload.conversationId}\``,
     `- **Resume in Antigravity CLI:** \`${payload.resumeCommand}\``,
     `- **Continue from Claude Code:** \`/agy:rescue --resume "<next instruction>"\``,
+    `- **Pull Back into Claude Later:** \`/agy:pull ${payload.conversationId}\``,
     `- **Verbatim Session Archive:** \`${payload.handoffPath}\``,
     payload.touchedFiles?.length
       ? `- **Files Touched During Executed Next Step:** ${payload.touchedFiles.map((f) => `\`${f}\``).join(", ")}`
@@ -58,6 +72,81 @@ export function renderTransferResult(payload) {
   return `${lines.join("\n")}\n`;
 }
 
+export function renderPullResult(payload) {
+  if (payload.mode === "list") {
+    if (!payload.conversations.length) {
+      return "No Antigravity conversations found for this workspace. Pass `--all` to list across all workspaces.\n";
+    }
+    const rows = [
+      `## Antigravity Conversations (${payload.backend})`,
+      `| Conversation ID | Status | Steps | Last Modified | Workspace Match |`,
+      `| :--- | :--- | ---: | :--- | :---: |`
+    ];
+    for (const c of payload.conversations) {
+      rows.push(
+        `| \`${c.conversationId}\` | ${c.status} | ${c.stepCount ?? "-"} | ${c.lastModifiedTime || "-"} | ${c.matchesWorkspace ? "Yes" : "Other"} |`
+      );
+    }
+    rows.push("", "Run `/agy:pull <conversation-id>` to import any conversation into Claude Code.");
+    return `${rows.join("\n")}\n`;
+  }
+
+  const lines = [
+    `## Antigravity 2.0 Conversation Pulled into Claude Code`,
+    `- **Source Engine:** \`${payload.backend}\``,
+    `- **Antigravity Conversation ID:** \`${payload.conversationId}\``,
+    `- **Total Steps:** ${payload.stepCount}`,
+    `- **Full Trajectory Archive:** \`${payload.archivePath}\``,
+    payload.touchedFiles?.length
+      ? `- **Files Modified in Antigravity:** ${payload.touchedFiles.map((f) => `\`${f}\``).join(", ")}`
+      : `- **Files Modified in Antigravity:** (none reported)`,
+    "",
+    "### Imported Conversation Context",
+    "",
+    payload.excerpt || "*(No textual steps recorded — inspect archive file if needed)*"
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderQuotaHud(hud) {
+  const lines = [
+    `# Antigravity 2.0 Live HUD & Quota Monitor`,
+    `- **Desktop Engine:** ${hud.available ? `Connected (\`${hud.address}\`)` : "Offline"}`,
+    hud.planName ? `- **Plan Tier:** **${hud.planName}**${hud.accountLabel ? ` (\`${hud.accountLabel}\`)` : ""}` : null,
+    `- **Workspace Jobs:** ${hud.activeJobs.length} running / ${hud.recentJobsCount} total recorded`
+  ].filter(Boolean);
+
+  if (!hud.available) {
+    lines.push("", `> ${hud.detail}`);
+    return `${lines.join("\n")}\n`;
+  }
+
+  if (hud.models.length > 0) {
+    lines.push(
+      "",
+      "## Live Per-Model Quota & Reset Timers",
+      "",
+      "| Model | Quota Bar | Remaining | Resets In | Multimodal |",
+      "| :--- | :--- | ---: | :--- | :---: |"
+    );
+    for (const m of hud.models) {
+      const tag = m.isRecommended ? " *(Recommended)*" : "";
+      lines.push(
+        `| **${escapeMarkdownCell(m.label)}**${tag} | \`${m.bar}\` | **${m.remainingPct.toFixed(1)}%** | ${m.resetIn} | ${m.supportsImages ? "Yes" : "-"} |`
+      );
+    }
+  }
+
+  if (hud.activeJobs.length > 0) {
+    lines.push("", "## Active Background Jobs");
+    for (const j of hud.activeJobs) {
+      lines.push(`- \`${j.id}\` (${j.kind}) — **${j.status}**: ${j.summary}`);
+    }
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 export function renderStatusTable(jobs, reviewGateEnabled = false) {
   if (!jobs.length) {
     return `No Antigravity jobs recorded for this workspace yet. (Stop review gate: ${reviewGateEnabled ? "enabled" : "disabled"})\n`;
@@ -67,7 +156,7 @@ export function renderStatusTable(jobs, reviewGateEnabled = false) {
     `| :--- | :--- | :--- | :--- | :--- | :--- |`
   ];
   for (const j of jobs.slice(0, 15)) {
-    const summary = String(j.summary ?? "").replace(/\|/g, "\\|").replace(/\s+/g, " ").slice(0, 64);
+    const summary = escapeMarkdownCell(j.summary).slice(0, 64);
     rows.push(
       `| \`${j.id}\` | ${j.kind} | **${j.status}** | ${j.phase || "-"} | ${j.conversationId ? `\`${j.conversationId}\`` : "-"} | ${summary} |`
     );

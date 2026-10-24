@@ -1,6 +1,6 @@
 ---
-description: Delegate investigation, frontend/UI work, debugging, or implementation to Google Antigravity
-argument-hint: "[--background|--wait] [--resume|--fresh] [--focus-ui] [--model <pro|flash|flash_lite>] [what Antigravity should solve or continue]"
+description: Delegate investigation, frontend/UI work, debugging, or isolated --worktree implementation to Google Antigravity
+argument-hint: "[--background|--wait] [--worktree] [--resume|--fresh] [--focus-ui] [--model <pro|flash|flash_lite>] [what Antigravity should solve or continue]"
 allowed-tools: Bash(node:*), AskUserQuestion, Agent
 ---
 
@@ -11,7 +11,8 @@ Raw user request:
 $ARGUMENTS
 
 Routing rules:
-- If `--resume` or `--fresh` is not explicitly provided, check whether a resumable Antigravity conversation exists in this workspace:
+- If `--worktree` is passed, forward `--worktree` directly (starts a clean isolated git worktree so Antigravity never collides with files Claude Code is editing).
+- Otherwise, if `--resume` or `--fresh` is not explicitly provided, check whether a resumable Antigravity conversation exists in this workspace:
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" task-resume-candidate --json
 ```
