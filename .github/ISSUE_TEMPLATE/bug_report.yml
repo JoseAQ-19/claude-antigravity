@@ -1,0 +1,43 @@
+name: Bug Report
+description: Report a bug with Desktop RPC discovery, /agy:transfer, or CLI fallback
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Clear description of the issue and expected vs actual behavior.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows 11 / 10 (Native PowerShell / CMD)
+        - Windows WSL2
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Antigravity Backend Mode
+      options:
+        - Antigravity 2.0 Desktop IDE (desktop-live)
+        - Standalone agy CLI (cli-headless)
+        - Both installed
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Output of `/agy:setup` (redact any private repo names if needed)
+      render: json
+      placeholder: |
+        Paste the output of:
+        node plugins/agy/scripts/agy-companion.mjs setup --json
+    validations:
+      required: false

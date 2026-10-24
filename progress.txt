@@ -1,13 +1,17 @@
-# Project Progress — Claude Code ↔ Antigravity Plugin (`antigravity-plugin-cc`)
+# Project Progress — Claude Code ↔ Antigravity Plugin (`claude-antigravity-bridge`)
 Last Updated: 2026-10-24
 
 ## Completed Tasks
-- [x] Fase 0.1–0.5: Investigación completa de `openai/codex-plugin-cc` y auditoría empírica de Antigravity 2.0 (`language_server.exe` + `agentapi` + `agy` CLI).
+- [x] Fase 0.1–0.5: Investigación completa de `openai/codex-plugin-cc` y auditoría empírica de Antigravity 2.0 (`language_server` + `agentapi` + `agy` CLI).
 - [x] Fase 1.0: Definición de `PRD.md` atómico con decisiones confirmadas (Modo Dual, `/agy:transfer` ejecuta el siguiente paso automáticamente, prefijo `/agy:*`).
 - [x] RF-01: Implementado `plugins/agy/scripts/lib/args.mjs` + validado con `tests/test_args.mjs`.
 - [x] RF-02: Implementados `plugins/agy/scripts/lib/state.mjs` y `lib/git.mjs` + validados con `tests/test_state_git.mjs`.
 - [x] RF-03: Implementado `plugins/agy/scripts/lib/claude-session-parser.mjs` + validado con `tests/test_claude_session_parser.mjs`.
-- [x] RF-04: Implementado `plugins/agy/scripts/lib/ls-discovery.mjs` + validado con `tests/test_ls_discovery.mjs` (autodescubrimiento real en vivo verificado).
-- [x] RF-05: Implementados `plugins/agy/scripts/lib/agy-runtime.mjs` y `lib/render.mjs` + validados con `tests/test_agy_runtime.mjs`.
+- [x] RF-04: Implementado `plugins/agy/scripts/lib/ls-discovery.mjs` (Windows PowerShell CIM/TCP + macOS `lsof` + Linux `ss -tlnp`) + validado con `tests/test_ls_discovery.mjs`.
+- [x] RF-05: Implementados `plugins/agy/scripts/lib/agy-runtime.mjs` (con degradación elegante `404/501` Connect RPC, fallback `git status` y timeout guard en CLI) y `lib/render.mjs` + validados con `tests/test_agy_runtime.mjs`.
 - [x] RF-06: Implementados `agy-companion.mjs`, `session-lifecycle-hook.mjs` y `stop-review-gate-hook.mjs` + validados con `tests/test_companion_cli.mjs`.
-- [x] RF-07: Creados manifiestos `.claude-plugin`, 8 comandos `/agy:*`, subagente `agy-rescue`, skills y prompts; validados con `claude plugin validate`, probados E2E en vivo (`tests/test_e2e_live.mjs` — 15/15 tests en verde) e instalados oficialmente en Claude Code (`agy@antigravity-cc`).
+- [x] RF-07: Creados manifiestos `.claude-plugin` (`antigravity-live`), 8 comandos `/agy:*`, subagente `agy-rescue`, skills y prompts; validados con `claude plugin validate` y probados E2E en vivo (`tests/live/test_e2e_live.mjs`).
+- [x] Fase 2.0: Estudio profundo de mercado y estrategia Open Source (`estudio_mercado_open_source.md`).
+- [x] RF-08: Creada skill omnicanal `skills/antigravity-bridge/SKILL.md` compatible con `npx skills add` (`skills.sh`).
+- [x] RF-09: Separadas suites herméticas CI (`npm test`) vs E2E en vivo (`npm run test:live`), sanitizadas rutas locales, añadido `scripts/verify-release.mjs`, `tests/test_release_readiness.mjs` y matriz GitHub Actions `.github/workflows/ci.yml` (Ubuntu/macOS/Windows).
+- [x] RF-10: Añadidos `LICENSE` (Apache-2.0), `NOTICE`, `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, plantillas `.github/` y `README.md` bilingüe listo para publicación Open Source.

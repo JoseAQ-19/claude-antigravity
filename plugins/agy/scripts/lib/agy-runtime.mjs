@@ -153,6 +153,36 @@ function invokeAgentApi(conn, args, projectId = null) {
   return parsed;
 }
 
+function snapshotGitStatusPaths(workspaceRoot) {
+  try {
+    const res = spawnSync("git", ["status", "--porcelain"], {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 4000
+    });
+    if (res.status !== 0) return null;
+    const set = new Set();
+    for (const line of String(res.stdout ?? "").split(/\r?\n/)) {
+      if (line.length < 4) continue;
+      const rel = line.slice(3).trim().replace(/^"(.*)"$/, "$1");
+      if (rel && !rel.includes(".claude/agy-handoffs")) {
+        set.add(path.resolve(workspaceRoot, rel));
+      }
+    }
+    return set;
+  } catch {
+    return null;
+  }
+}
+
+function isRpcMethodUnsupportedError(err) {
+  const code = Number(err?.statusCode ?? 0);
+  if (code === 404 || code === 405 || code === 501) return true;
+  const msg = String(err?.message ?? "").toLowerCase();
+  return msg.includes("unimplemented") || msg.includes("unknown method") || msg.includes("unknown service");
+}
+
 function isStepTerminal(status) {
   const s = String(status ?? "");
   return s.includes("DONE") || s.includes("ERROR") || s.includes("CANCELED") || s.includes("CANCELLED") || s.includes("FAILED");
@@ -202,29 +232,34 @@ function sleep(ms) {
 
 export async function runDesktopTurn(conn, cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const callAgentApi = options.invokeAgentApiFn ?? invokeAgentApi;
+  const preGitPaths = snapshotGitStatusPaths(workspaceRoot);
   const projectId = await ensureDesktopProjectId(conn, workspaceRoot);
   const safePrompt = spillLargePromptIfNeeded(workspaceRoot, options.prompt, options.kind || "task");
   const modelTier = normalizeDesktopModelTier(options.model, options.defaultModelTier || "pro");
 
   let conversationId = options.resumeConversationId || null;
   let initialStepCount = 0;
+  let trajectoryRpcUnsupported = false;
 
   if (conversationId) {
     try {
       const pre = await connectRpcPost(conn.address, "GetCascadeTrajectory", { cascadeId: conversationId }, conn.csrfToken, 6000);
       initialStepCount = pre?.trajectory?.steps?.length ?? 0;
-    } catch {}
+    } catch (err) {
+      if (isRpcMethodUnsupportedError(err)) trajectoryRpcUnsupported = true;
+    }
     options.onProgress?.({ phase: "starting", message: `Sending follow-up turn to Antigravity conversation ${conversationId}.` });
     const args = ["send-message"];
     if (options.title) args.push(`--title=${options.title}`);
     args.push(conversationId, safePrompt);
-    invokeAgentApi(conn, args, projectId);
+    callAgentApi(conn, args, projectId);
   } else {
     options.onProgress?.({ phase: "starting", message: `Starting live Antigravity Desktop conversation (model=${modelTier}).` });
     const args = ["new-conversation", `--model=${modelTier}`];
     if (options.title) args.push(`--title=${options.title}`);
     args.push(safePrompt);
-    const created = invokeAgentApi(conn, args, projectId);
+    const created = callAgentApi(conn, args, projectId);
     const ev = created?.response?.newConversation || created?.response?.new_conversation || {};
     conversationId = ev.conversationId || ev.conversation_id || null;
     if (!conversationId) {
@@ -239,20 +274,47 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
   }
 
   const timeoutMs = options.timeoutMs ?? 20 * 60 * 1000;
+  const pollIntervalMs = options.pollIntervalMs ?? 400;
   const deadline = Date.now() + timeoutMs;
 
   // 1. Wait briefly until the new user turn registers in GetCascadeTrajectory
   let steps = [];
-  for (let i = 0; i < 25 && Date.now() < deadline; i += 1) {
-    try {
-      const traj = await connectRpcPost(conn.address, "GetCascadeTrajectory", { cascadeId: conversationId }, conn.csrfToken, 5000);
-      steps = traj?.trajectory?.steps ?? [];
-      if (steps.length > initialStepCount) break;
-    } catch {}
-    await sleep(400);
+  if (!trajectoryRpcUnsupported) {
+    for (let i = 0; i < 25 && Date.now() < deadline; i += 1) {
+      try {
+        const traj = await connectRpcPost(conn.address, "GetCascadeTrajectory", { cascadeId: conversationId }, conn.csrfToken, 5000);
+        steps = traj?.trajectory?.steps ?? [];
+        if (steps.length > initialStepCount) break;
+      } catch (err) {
+        if (isRpcMethodUnsupportedError(err)) {
+          trajectoryRpcUnsupported = true;
+          break;
+        }
+      }
+      await sleep(pollIntervalMs);
+    }
   }
 
-  // 2. Wait for conversation idle + terminal planner response
+  // 2. Graceful fallback if a future Antigravity build removes internal trajectory Connect RPCs
+  if (trajectoryRpcUnsupported) {
+    let metadataNote = "";
+    try {
+      const meta = callAgentApi(conn, ["get-conversation-metadata", conversationId], projectId);
+      const title = meta?.response?.title || meta?.title || "";
+      if (title) metadataNote = ` ("${title}")`;
+    } catch {}
+    return {
+      exitStatus: 0,
+      backend: "desktop-live",
+      conversationId,
+      projectId,
+      finalMessage: `Task dispatched live to Antigravity Desktop conversation \`${conversationId}\`${metadataNote}. (Live trajectory streaming RPC was unavailable on this Desktop build; inspect progress directly in Antigravity Desktop.)`,
+      reasoningSummary: [],
+      touchedFiles: []
+    };
+  }
+
+  // 3. Wait for conversation idle + terminal planner response
   let lastLoggedStepCount = initialStepCount;
   let extracted = extractTurnDataFromSteps(steps, initialStepCount);
 
@@ -270,7 +332,7 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
         55000
       );
     } catch {
-      await sleep(1500);
+      await sleep(Math.min(1500, pollIntervalMs * 2));
     }
 
     try {
@@ -288,12 +350,16 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
       if (extracted.stepCount > 0 && !extracted.hasActiveSteps && (extracted.hasPlannerResponse || steps.length > initialStepCount + 1)) {
         break;
       }
-    } catch {}
+    } catch (err) {
+      if (isRpcMethodUnsupportedError(err)) {
+        break;
+      }
+    }
 
-    await sleep(1000);
+    await sleep(Math.min(1000, pollIntervalMs * 2));
   }
 
-  // 3. Collect touched files from GetTrajectoryFileDiffs
+  // 4. Collect touched files from GetTrajectoryFileDiffs (with git status fallback)
   let touchedFiles = [];
   try {
     const diffRes = await connectRpcPost(conn.address, "GetTrajectoryFileDiffs", { conversationId }, conn.csrfToken, 6000);
@@ -307,6 +373,13 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
         return np.startsWith(normWs) && !np.includes("/.claude/agy-handoffs/");
       });
   } catch {}
+
+  if (touchedFiles.length === 0 && preGitPaths) {
+    const postGitPaths = snapshotGitStatusPaths(workspaceRoot);
+    if (postGitPaths) {
+      touchedFiles = [...postGitPaths].filter((p) => !preGitPaths.has(p));
+    }
+  }
 
   return {
     exitStatus: extracted.finalMessage ? 0 : 1,
@@ -338,6 +411,7 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
   const isCmd = process.platform === "win32" && cliInfo.path.toLowerCase().endsWith(".cmd");
   const spawnFile = isCmd ? (process.env.ComSpec || "cmd.exe") : cliInfo.path;
   const spawnArgs = isCmd ? ["/d", "/s", "/c", cliInfo.path, ...args] : args;
+  const timeoutMs = options.timeoutMs ?? 20 * 60 * 1000;
 
   return new Promise((resolve, reject) => {
     const child = spawn(spawnFile, spawnArgs, {
@@ -350,8 +424,14 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
     let stdoutBuf = "";
     let stderrBuf = "";
     let conversationId = options.resumeConversationId || null;
+    let timedOut = false;
     const textParts = [];
     const reasoningSummary = [];
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateProcessTree(child.pid);
+    }, timeoutMs);
 
     const processLine = (line) => {
       const trimmed = line.trim();
@@ -394,16 +474,22 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
     child.stderr.on("data", (chunk) => {
       stderrBuf += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (stdoutBuf.trim()) processLine(stdoutBuf);
       const finalMessage = textParts.join("\n").trim();
       resolve({
-        exitStatus: code ?? 0,
+        exitStatus: timedOut ? 124 : code ?? 0,
         backend: "cli-headless",
         conversationId,
         projectId: null,
-        finalMessage: finalMessage || stderrBuf.trim(),
+        finalMessage:
+          finalMessage ||
+          (timedOut ? `agy CLI timed out after ${Math.round(timeoutMs / 1000)}s.` : stderrBuf.trim()),
         reasoningSummary: reasoningSummary.slice(-6),
         touchedFiles: [],
         stderr: stderrBuf.trim()
@@ -422,7 +508,25 @@ export async function runDualAntigravityTurn(cwd, options = {}) {
 
   const preferCli = options.backend === "cli";
   if (!preferCli && status.desktop.available) {
-    return runDesktopTurn(status.desktop, cwd, options);
+    let startedDesktopConversation = false;
+    try {
+      return await runDesktopTurn(status.desktop, cwd, {
+        ...options,
+        onStarted: (info) => {
+          startedDesktopConversation = true;
+          options.onStarted?.(info);
+        }
+      });
+    } catch (err) {
+      if (!startedDesktopConversation && status.cli.available) {
+        options.onProgress?.({
+          phase: "fallback",
+          message: `Desktop dispatch failed (${err.message}); falling back automatically to agy CLI.`
+        });
+        return runCliTurn(status.cli, cwd, options);
+      }
+      throw err;
+    }
   }
   if (status.cli.available) {
     return runCliTurn(status.cli, cwd, options);

@@ -1,20 +1,33 @@
 {
-  "name": "antigravity-cc",
+  "name": "antigravity-live",
   "owner": {
-    "name": "Local Engineering"
+    "name": "Jose Ariza Quintero",
+    "url": "https://github.com/JoseAQ-19"
   },
   "metadata": {
-    "description": "Google Antigravity companion plugin for Claude Code (task delegation, code review, and full session transfer with automatic next-step execution).",
+    "description": "Live Google Antigravity 2.0 Desktop IDE + agy CLI companion plugin for Claude Code (task delegation, code reviews, and full .jsonl conversation transfer with automatic next-step execution).",
     "version": "1.0.0"
   },
   "plugins": [
     {
       "name": "agy",
-      "description": "Delegate tasks, reviews, and full Claude Code conversations to Google Antigravity (Dual Desktop RPC + agy CLI).",
+      "description": "Delegate tasks, run cross-model reviews, or transfer full active Claude Code conversations live into Google Antigravity 2.0 Desktop IDE (with automatic agy CLI fallback).",
       "version": "1.0.0",
       "author": {
-        "name": "Local Engineering"
+        "name": "Jose Ariza Quintero",
+        "url": "https://github.com/JoseAQ-19"
       },
+      "homepage": "https://github.com/JoseAQ-19/claude-antigravity-bridge",
+      "repository": "https://github.com/JoseAQ-19/claude-antigravity-bridge",
+      "license": "Apache-2.0",
+      "keywords": [
+        "antigravity",
+        "agy",
+        "gemini",
+        "handoff",
+        "session-transfer",
+        "code-review"
+      ],
       "source": "./plugins/agy"
     }
   ]

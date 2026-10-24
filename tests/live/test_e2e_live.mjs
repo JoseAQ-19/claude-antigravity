@@ -4,55 +4,60 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { connectRpcPost, discoverLanguageServer } from "../plugins/agy/scripts/lib/ls-discovery.mjs";
+import { connectRpcPost, discoverLanguageServer } from "../../plugins/agy/scripts/lib/ls-discovery.mjs";
 
 const COMPANION = path.resolve("plugins/agy/scripts/agy-companion.mjs");
 
-test("LIVE E2E: /agy:transfer executes next step on real Antigravity 2.0 and /agy:rescue --resume continues it", async () => {
+test("LIVE E2E: auto-discovers running Antigravity 2.0 Desktop, transfers session, executes next step, and resumes", async () => {
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.ANTIGRAVITY_LS_ADDRESS;
+  delete cleanEnv.ANTIGRAVITY_CSRF_TOKEN;
+  delete cleanEnv.ANTIGRAVITY_CONVERSATION_ID;
+  delete cleanEnv.ANTIGRAVITY_PROJECT_ID;
+  delete cleanEnv.ANTIGRAVITY_AGENTAPI_EXE;
+
+  const liveConn = await discoverLanguageServer({ env: cleanEnv });
+  assert.equal(liveConn.available, true, "Expected Antigravity 2.0 Desktop to be running for test:live");
+  assert.equal(liveConn.source, "process-scan");
+
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agy-e2e-live-"));
   const tmpData = path.join(tmpRoot, "plugin-data");
   const jsonlPath = path.join(tmpRoot, "claude-session-e2e.jsonl");
-
-  // Strip ANTIGRAVITY_* env vars to simulate running inside a completely external Claude Code terminal!
-  const externalEnv = { ...process.env, CLAUDE_PLUGIN_DATA: tmpData };
-  delete externalEnv.ANTIGRAVITY_LS_ADDRESS;
-  delete externalEnv.ANTIGRAVITY_CSRF_TOKEN;
-  delete externalEnv.ANTIGRAVITY_CONVERSATION_ID;
-  delete externalEnv.ANTIGRAVITY_PROJECT_ID;
-  delete externalEnv.ANTIGRAVITY_AGENTAPI_EXE;
+  const externalEnv = { ...cleanEnv, CLAUDE_PLUGIN_DATA: tmpData };
 
   let createdConversationId = null;
 
   try {
-    const sampleTranscript = [
-      JSON.stringify({
-        type: "user",
-        cwd: process.cwd(),
-        gitBranch: "main",
-        sessionId: "claude-session-e2e",
-        message: {
-          role: "user",
-          content: "We are testing secret codeword ALPHA-742. In step 1 you acknowledged it. In step 2 (the next step), reply ONLY with DONE-ALPHA-742 without touching any files."
-        }
-      }),
-      JSON.stringify({
-        type: "assistant",
-        message: {
-          id: "msg_e2e_1",
-          role: "assistant",
-          content: [
-            {
-              type: "text",
-              text: "Step 1 complete: I acknowledged secret codeword ALPHA-742. Pending next step: reply with DONE-ALPHA-742 without editing files."
-            }
-          ]
-        }
-      })
-    ].join("\n") + "\n";
+    const sampleTranscript =
+      [
+        JSON.stringify({
+          type: "user",
+          cwd: process.cwd(),
+          gitBranch: "main",
+          sessionId: "claude-session-e2e",
+          message: {
+            role: "user",
+            content:
+              "We are testing secret codeword ALPHA-742. In step 1 you acknowledged it. In step 2 (the next step), reply ONLY with DONE-ALPHA-742 without touching any files."
+          }
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            id: "msg_e2e_1",
+            role: "assistant",
+            content: [
+              {
+                type: "text",
+                text: "Step 1 complete: I acknowledged secret codeword ALPHA-742. Pending next step: reply with DONE-ALPHA-742 without editing files."
+              }
+            ]
+          }
+        })
+      ].join("\n") + "\n";
 
     fs.writeFileSync(jsonlPath, sampleTranscript, "utf8");
 
-    // 1. Run real transfer (auto-discovers LS, creates conversation, executes next step!)
     const transferRes = spawnSync(
       process.execPath,
       [
@@ -81,7 +86,6 @@ test("LIVE E2E: /agy:transfer executes next step on real Antigravity 2.0 and /ag
     assert.equal(transferPayload.backend, "desktop-live");
     assert.match(transferPayload.finalMessage, /ALPHA-742/i);
 
-    // 2. Run follow-up --resume on that exact transferred conversation!
     const resumeRes = spawnSync(
       process.execPath,
       [
@@ -106,12 +110,14 @@ test("LIVE E2E: /agy:transfer executes next step on real Antigravity 2.0 and /ag
     assert.equal(resumePayload.conversationId, createdConversationId);
     assert.match(resumePayload.rawOutput, /ALPHA-742/i);
   } finally {
-    // Clean up temporary test conversation from Antigravity Desktop + local .claude/agy-handoffs
-    if (createdConversationId) {
-      const ls = await discoverLanguageServer();
-      if (ls.available) {
-        await connectRpcPost(ls.address, "DeleteCascadeTrajectory", { cascadeId: createdConversationId }, ls.csrfToken, 5000).catch(() => {});
-      }
+    if (createdConversationId && liveConn.available) {
+      await connectRpcPost(
+        liveConn.address,
+        "DeleteCascadeTrajectory",
+        { cascadeId: createdConversationId },
+        liveConn.csrfToken,
+        5000
+      ).catch(() => {});
     }
     const wsHandoff = path.join(process.cwd(), ".claude", "agy-handoffs");
     if (fs.existsSync(wsHandoff)) {

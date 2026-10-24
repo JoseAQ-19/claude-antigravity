@@ -1,10 +1,35 @@
 {
-  "name": "antigravity-plugin-cc",
+  "name": "claude-antigravity-bridge",
   "version": "1.0.0",
-  "private": true,
-  "description": "Claude Code plugin to delegate tasks, code reviews, and full conversations to Google Antigravity (Dual Desktop RPC + agy CLI).",
+  "description": "Bridge Claude Code directly with Google Antigravity 2.0 Desktop IDE (Live Connect RPC + agentapi) and agy CLI — task delegation, code reviews, and live .jsonl conversation transfer.",
+  "license": "Apache-2.0",
+  "author": "Jose Ariza Quintero (@JoseAQ-19)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JoseAQ-19/claude-antigravity-bridge.git"
+  },
+  "homepage": "https://github.com/JoseAQ-19/claude-antigravity-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/JoseAQ-19/claude-antigravity-bridge/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude-plugin",
+    "antigravity",
+    "google-antigravity",
+    "agy",
+    "gemini",
+    "agent-handoff",
+    "session-transfer",
+    "agent-skills"
+  ],
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
-    "test": "node --test tests/test_*.mjs"
+    "test": "node --test tests/test_*.mjs",
+    "test:live": "node --test tests/live/test_e2e_live.mjs",
+    "verify": "node scripts/verify-release.mjs && npm test"
   }
 }

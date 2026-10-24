@@ -1,8 +1,12 @@
 {
   "name": "agy",
   "version": "1.0.0",
-  "description": "Use Google Antigravity from Claude Code to delegate tasks, run reviews, or transfer full active conversations.",
+  "description": "Use Google Antigravity 2.0 Desktop IDE or agy CLI from Claude Code to delegate tasks, run reviews, or transfer full active conversations live.",
   "author": {
-    "name": "Local Engineering"
-  }
+    "name": "Jose Ariza Quintero",
+    "url": "https://github.com/JoseAQ-19"
+  },
+  "homepage": "https://github.com/JoseAQ-19/claude-antigravity-bridge",
+  "repository": "https://github.com/JoseAQ-19/claude-antigravity-bridge",
+  "license": "Apache-2.0"
 }

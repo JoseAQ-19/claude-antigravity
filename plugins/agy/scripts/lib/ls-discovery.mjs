@@ -68,7 +68,33 @@ export function extractExeFromCmd(commandLine) {
   }
   const winMatch = cmd.match(/^([a-zA-Z]:\\[^\n\r]*?language_server[^\s"']*\.exe)/i);
   if (winMatch) return winMatch[1];
+  const macMatch = cmd.match(/^(\/[^\n\r]*?\.app\/Contents\/Resources\/bin\/language_server[^\s"']*)/);
+  if (macMatch) return macMatch[1];
   return cmd.split(/\s+/)[0] || null;
+}
+
+export function parseLsofListeningPorts(lsofOutput) {
+  const ports = [];
+  for (const line of String(lsofOutput ?? "").split(/\r?\n/)) {
+    const pm = line.match(/:(\d+)\s+\(LISTEN\)/);
+    if (pm) ports.push(Number(pm[1]));
+  }
+  return [...new Set(ports)];
+}
+
+export function parseSsListeningPortsForPid(ssOutput, pid) {
+  const ports = [];
+  const pidToken = `pid=${pid},`;
+  const pidTokenAlt = `pid=${pid})`;
+  for (const line of String(ssOutput ?? "").split(/\r?\n/)) {
+    if (!line.includes(pidToken) && !line.includes(pidTokenAlt)) continue;
+    const cols = line.trim().split(/\s+/);
+    const localAddr = cols.find((c) => /:\d+$/.test(c));
+    if (!localAddr) continue;
+    const pm = localAddr.match(/:(\d+)$/);
+    if (pm) ports.push(Number(pm[1]));
+  }
+  return [...new Set(ports)];
 }
 
 export function findDefaultLanguageServerExe() {
@@ -100,6 +126,9 @@ export function findDefaultLanguageServerExe() {
         ]
       : [
           "/Applications/Antigravity.app/Contents/Resources/bin/language_server",
+          path.join(os.homedir(), "Applications", "Antigravity.app", "Contents", "Resources", "bin", "language_server"),
+          "/opt/Antigravity/resources/bin/language_server",
+          "/usr/share/antigravity/resources/bin/language_server",
           path.join(os.homedir(), ".local", "share", "Antigravity", "resources", "bin", "language_server")
         ];
   return candidates.find((p) => fs.existsSync(p)) ?? null;
@@ -132,6 +161,7 @@ function listCandidateProcessesWindows() {
 function listCandidateProcessesPosix() {
   const psRes = spawnSync("ps", ["-ax", "-o", "pid=,command="], { encoding: "utf8", timeout: 4000 });
   if (psRes.status !== 0) return [];
+  let cachedSsOutput = null;
   const results = [];
   for (const line of psRes.stdout.split(/\r?\n/)) {
     if (!line.includes("language_server")) continue;
@@ -143,10 +173,15 @@ function listCandidateProcessesPosix() {
       encoding: "utf8",
       timeout: 3000
     });
-    const ports = [];
-    for (const lLine of String(lsof.stdout ?? "").split(/\r?\n/)) {
-      const pm = lLine.match(/:(\d+)\s+\(LISTEN\)/);
-      if (pm) ports.push(Number(pm[1]));
+    let ports = parseLsofListeningPorts(lsof.stdout);
+    if (ports.length === 0) {
+      if (cachedSsOutput === null) {
+        const ss = spawnSync("ss", ["-tlnp"], { encoding: "utf8", timeout: 3000 });
+        cachedSsOutput = ss.status === 0 ? String(ss.stdout ?? "") : "";
+      }
+      if (cachedSsOutput) {
+        ports = parseSsListeningPortsForPid(cachedSsOutput, pid);
+      }
     }
     results.push({ pid, cmd, ports });
   }
@@ -173,9 +208,10 @@ export async function discoverLanguageServer(options = {}) {
     }
   }
 
-  const candidates =
-    options.mockCandidates ??
-    (process.platform === "win32" ? listCandidateProcessesWindows() : listCandidateProcessesPosix());
+  const candidates = [
+    ...(options.mockCandidates ??
+      (process.platform === "win32" ? listCandidateProcessesWindows() : listCandidateProcessesPosix()))
+  ];
 
   // Prefer Antigravity Hub ("--subclient_type hub" / "--app_data_dir antigravity") first
   candidates.sort((a, b) => {
@@ -222,6 +258,17 @@ export async function discoverLanguageServer(options = {}) {
 
 export function findAgyCli(options = {}) {
   const env = options.env ?? process.env;
+  if (env.AGY_DISABLE_CLI_SCAN === "1" && !env.AGY_CLI_PATH) {
+    return {
+      available: false,
+      path: null,
+      version: null,
+      installCommand:
+        process.platform === "win32"
+          ? "irm https://antigravity.google/cli/install.ps1 | iex"
+          : "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+    };
+  }
   const explicit = env.AGY_CLI_PATH;
   const candidates = [
     explicit,
