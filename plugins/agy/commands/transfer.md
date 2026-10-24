@@ -2,7 +2,6 @@
 description: Transfer the entire active Claude Code conversation into Google Antigravity, focus it in Desktop UI, and automatically execute the next pending step
 argument-hint: "[--background|--wait] [--handoff-only] [--no-focus] [--model <pro|flash|flash_lite>] [--source <claude-jsonl>] [optional next-step instruction]"
 disable-model-invocation: false
-allowed-tools: Bash(node:*)
 ---
 
 Transfer the current Claude Code session into Google Antigravity, open/focus it in Antigravity 2.0 Desktop (when running), and automatically execute the next pending step (unless `--handoff-only` is passed).

@@ -1,7 +1,6 @@
 ---
 description: Preview or revert the latest delegated Google Antigravity turn via RevertToCascadeStep RPC (or git touched-files fallback)
 argument-hint: "[job-id] [--conversation <id>] [--step <n>] [--apply]"
-allowed-tools: Bash(node:*)
 ---
 
 Preview (dry-run by default) or execute (`--apply`) a clean rollback of the most recent Google Antigravity turn.

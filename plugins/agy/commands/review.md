@@ -2,7 +2,7 @@
 description: Run a read-only Google Antigravity code review against local git changes or a base branch
 argument-hint: "[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <pro|flash|flash_lite>]"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Bash(git:*), AskUserQuestion
+allowed-tools: AskUserQuestion
 ---
 
 Run a read-only Google Antigravity code review.

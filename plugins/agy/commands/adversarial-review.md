@@ -2,7 +2,7 @@
 description: Run an adversarial Google Antigravity review challenging architecture, assumptions, and failure modes
 argument-hint: "[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <pro|flash|flash_lite>] [focus ...]"
 disable-model-invocation: true
-allowed-tools: Bash(node:*), Bash(git:*), AskUserQuestion
+allowed-tools: AskUserQuestion
 ---
 
 Run an adversarial Google Antigravity architecture and implementation review.

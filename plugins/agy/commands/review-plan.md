@@ -1,7 +1,6 @@
 ---
 description: Critique an implementation plan (Claude Plan Mode, PLAN.md, PRD.md, or active session plan) with Google Antigravity before writing code
 argument-hint: "[plan-file] [--background] [--model <pro|flash>] [specific architectural focus]"
-allowed-tools: Bash(node:*)
 ---
 
 Run an independent Principal Architect & YAGNI critique on your implementation plan via Google Antigravity before spending tokens implementing code.

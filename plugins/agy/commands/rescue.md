@@ -1,11 +1,11 @@
 ---
 description: Delegate investigation, frontend/UI work, debugging, or isolated --worktree implementation to Google Antigravity
 argument-hint: "[--background|--wait] [--worktree] [--resume|--fresh] [--focus-ui] [--model <pro|flash|flash_lite>] [what Antigravity should solve or continue]"
-allowed-tools: Bash(node:*), AskUserQuestion, Agent
+allowed-tools: AskUserQuestion, Agent
 ---
 
 Invoke the `agy:agy-rescue` subagent via the `Agent` tool (`subagent_type: "agy:agy-rescue"`), forwarding the user's request.
-`agy:agy-rescue` is a subagent, not a skill — do not call `Skill(...)`.
+`agy:agy-rescue` is a subagent, not a skill â€” do not call `Skill(...)`.
 
 Raw user request:
 $ARGUMENTS

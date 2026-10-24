@@ -1,7 +1,7 @@
 ---
 description: Check whether Google Antigravity Desktop RPC or agy CLI is ready and optionally toggle the stop-time review gate
 argument-hint: "[--enable-review-gate|--disable-review-gate]"
-allowed-tools: Bash(node:*), Bash(powershell:*), Bash(curl:*), AskUserQuestion
+allowed-tools: AskUserQuestion
 ---
 
 Run:

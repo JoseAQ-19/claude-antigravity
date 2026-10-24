@@ -1,7 +1,6 @@
 ---
-description: Display the live Google Antigravity 2.0 HUD — per-model quota bars, reset countdown timers, plan tier, and active background jobs
+description: Display the live Google Antigravity 2.0 HUD â€” per-model quota bars, reset countdown timers, plan tier, and active background jobs
 argument-hint: "[--show-account]"
-allowed-tools: Bash(node:*)
 ---
 
 Display live model availability, remaining quota bars, reset countdown timers, and active workspace jobs from Google Antigravity 2.0 Desktop.

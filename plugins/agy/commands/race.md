@@ -1,7 +1,7 @@
 ---
 description: Race Google Antigravity (in an isolated git worktree) and Claude Code in parallel on the same task, then compare both solutions
 argument-hint: "[--model <pro|flash>] <bug fix, refactor, or feature specification>"
-allowed-tools: Bash(node:*), Read, Edit, Write, Glob, Grep, Bash(git:*)
+allowed-tools: Read, Edit, Write, Glob, Grep
 ---
 
 Launch a parallel dual-agent race: Google Antigravity solves the task inside an isolated `git worktree` in the background (zero file collisions), while you (Claude Code) solve the same task concurrently in the current workspace, followed by a side-by-side comparison.

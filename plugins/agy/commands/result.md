@@ -1,7 +1,6 @@
 ---
 description: Show stored output for a finished Google Antigravity job or apply its isolated worktree patch (--apply-worktree)
 argument-hint: "[job-id] [--apply-worktree]"
-allowed-tools: Bash(node:*)
 ---
 
 !`node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" result "$ARGUMENTS"`

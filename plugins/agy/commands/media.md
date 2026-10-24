@@ -1,7 +1,6 @@
 ---
-description: Give Claude Code multimodal eyes and ears — analyze videos (.mp4/.mov), audio (.mp3/.wav), PDFs, or screenshots via Gemini and correlate bugs with your codebase
+description: Give Claude Code multimodal eyes and ears â€” analyze videos (.mp4/.mov), audio (.mp3/.wav), PDFs, or screenshots via Gemini and correlate bugs with your codebase
 argument-hint: "<video/audio/pdf/image-file...> [--no-correlate] [--background] [--model <pro|flash>] [question or bug description]"
-allowed-tools: Bash(node:*)
 ---
 
 Delegate video, screen-recording, audio, PDF, or visual perception to Google Antigravity's native Gemini multimodal engine, save the exhaustive timestamped breakdown to `.claude/agy-handoffs/` (keeping Claude's context lean), and return an actionable root-cause digest correlated with the repository's source files.
