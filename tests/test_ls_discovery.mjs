@@ -19,6 +19,14 @@ test("extractCsrfTokenFromCmd and extractExeFromCmd parse Windows and macOS comm
     "/Applications/Antigravity.app/Contents/Resources/bin/language_server --csrf_token=tok_mac_456 --subclient_type hub";
   assert.equal(extractCsrfTokenFromCmd(macCmd), "tok_mac_456");
   assert.equal(extractExeFromCmd(macCmd), "/Applications/Antigravity.app/Contents/Resources/bin/language_server");
+
+  const macArmSpacesCmd =
+    "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm --csrf_token tok_arm_789 --app_data_dir antigravity";
+  assert.equal(extractCsrfTokenFromCmd(macArmSpacesCmd), "tok_arm_789");
+  assert.equal(
+    extractExeFromCmd(macArmSpacesCmd),
+    "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm"
+  );
 });
 
 test("parseLsofListeningPorts and parseSsListeningPortsForPid parse POSIX port outputs", () => {
@@ -74,7 +82,7 @@ test("discoverLanguageServer probes mock candidate ports, validates CSRF token, 
 
     assert.equal(conn.available, true);
     assert.equal(conn.source, "process-scan");
-    assert.equal(conn.address, `localhost:${port}`);
+    assert.equal(conn.address, `127.0.0.1:${port}`);
     assert.equal(conn.csrfToken, expectedToken);
     assert.equal(conn.pid, 1002);
   } finally {

@@ -15,3 +15,4 @@ Last Updated: 2026-10-24
 - [x] RF-08: Creada skill omnicanal `skills/antigravity-bridge/SKILL.md` compatible con `npx skills add` (`skills.sh`).
 - [x] RF-09: Separadas suites herméticas CI (`npm test`) vs E2E en vivo (`npm run test:live`), sanitizadas rutas locales, añadido `scripts/verify-release.mjs`, `tests/test_release_readiness.mjs` y matriz GitHub Actions `.github/workflows/ci.yml` (Ubuntu/macOS/Windows).
 - [x] RF-10: Añadidos `LICENSE` (Apache-2.0), `NOTICE`, `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, plantillas `.github/` y `README.md` bilingüe listo para publicación Open Source.
+- [x] RF-11 (macOS Apple Silicon & Intel Hardening): Añadido soporte explícito para `language_server_macos_arm` / `language_server_macos_x64` (incluso con espacios en `.app`), `ps -axww` anti-truncamiento BSD, sonda `127.0.0.1` antes de `localhost` (`::1`), `/opt/homebrew/bin/agy` y normalización de symlinks `/private/{tmp,var,etc}` en `darwin`.

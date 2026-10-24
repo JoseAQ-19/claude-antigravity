@@ -10,7 +10,15 @@ function stripWinLongPrefix(p) {
 }
 
 function normalizeComparePath(p) {
-  const clean = path.resolve(stripWinLongPrefix(p));
+  let clean = path.resolve(stripWinLongPrefix(p));
+  if (process.platform === "darwin") {
+    try {
+      clean = fs.realpathSync.native(clean);
+    } catch {
+      clean = clean.replace(/^\/private\/(var|tmp|etc)(\/|$)/, "/$1$2");
+    }
+    clean = clean.replace(/^\/private\/(var|tmp|etc)(\/|$)/, "/$1$2");
+  }
   return process.platform === "win32" ? clean.toLowerCase() : clean;
 }
 

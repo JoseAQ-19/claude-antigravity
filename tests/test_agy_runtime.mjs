@@ -13,16 +13,19 @@ import {
   runDesktopTurn
 } from "../plugins/agy/scripts/lib/agy-runtime.mjs";
 
-test("normalizeUriPathForCompare normalizes encoded URIs and local paths identically", () => {
-  if (process.platform === "win32") {
-    const fromLs = "file:///c%3A/Projects/my%20workspace";
-    const fromCwd = "C:\\Projects\\my workspace\\";
-    assert.equal(normalizeUriPathForCompare(fromLs), normalizeUriPathForCompare(fromCwd));
-  } else {
-    const fromLs = "file:///Users/dev/my%20workspace";
-    const fromCwd = "/Users/dev/my workspace/";
-    assert.equal(normalizeUriPathForCompare(fromLs), normalizeUriPathForCompare(fromCwd));
-  }
+test("normalizeUriPathForCompare normalizes encoded URIs, Windows paths, and macOS /private symlinks", () => {
+  assert.equal(
+    normalizeUriPathForCompare("file:///c%3A/Projects/my%20workspace", "win32"),
+    normalizeUriPathForCompare("C:\\Projects\\my workspace\\", "win32")
+  );
+  assert.equal(
+    normalizeUriPathForCompare("file:///private/tmp/my%20workspace/", "darwin"),
+    normalizeUriPathForCompare("/tmp/my workspace", "darwin")
+  );
+  assert.equal(
+    normalizeUriPathForCompare("file:///Users/dev/project", "darwin"),
+    "/Users/dev/project"
+  );
 });
 
 test("normalizeDesktopModelTier maps aliases accurately", () => {

@@ -68,8 +68,8 @@ export function extractExeFromCmd(commandLine) {
   }
   const winMatch = cmd.match(/^([a-zA-Z]:\\[^\n\r]*?language_server[^\s"']*\.exe)/i);
   if (winMatch) return winMatch[1];
-  const macMatch = cmd.match(/^(\/[^\n\r]*?\.app\/Contents\/Resources\/bin\/language_server[^\s"']*)/);
-  if (macMatch) return macMatch[1];
+  const posixMatch = cmd.match(/^(\/[^\n\r]*?\/language_server[^\s"']*)/);
+  if (posixMatch) return posixMatch[1];
   return cmd.split(/\s+/)[0] || null;
 }
 
@@ -126,7 +126,25 @@ export function findDefaultLanguageServerExe() {
         ]
       : [
           "/Applications/Antigravity.app/Contents/Resources/bin/language_server",
+          "/Applications/Antigravity.app/Contents/Resources/bin/language_server_macos_arm",
+          "/Applications/Antigravity.app/Contents/Resources/bin/language_server_macos_x64",
+          "/Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm",
+          "/Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_x64",
+          "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm",
+          "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_x64",
           path.join(os.homedir(), "Applications", "Antigravity.app", "Contents", "Resources", "bin", "language_server"),
+          path.join(
+            os.homedir(),
+            "Applications",
+            "Antigravity.app",
+            "Contents",
+            "Resources",
+            "app",
+            "extensions",
+            "antigravity",
+            "bin",
+            "language_server_macos_arm"
+          ),
           "/opt/Antigravity/resources/bin/language_server",
           "/usr/share/antigravity/resources/bin/language_server",
           path.join(os.homedir(), ".local", "share", "Antigravity", "resources", "bin", "language_server")
@@ -159,7 +177,8 @@ function listCandidateProcessesWindows() {
 }
 
 function listCandidateProcessesPosix() {
-  const psRes = spawnSync("ps", ["-ax", "-o", "pid=,command="], { encoding: "utf8", timeout: 4000 });
+  // Use -axww so BSD/macOS `ps` never truncates long command lines when COLUMNS is narrow
+  const psRes = spawnSync("ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8", timeout: 4000 });
   if (psRes.status !== 0) return [];
   let cachedSsOutput = null;
   const results = [];
@@ -226,19 +245,22 @@ export async function discoverLanguageServer(options = {}) {
     const exePath = extractExeFromCmd(proc.cmd) || defaultExe;
     const ports = Array.isArray(proc.ports) ? [...new Set(proc.ports)] : [];
     for (const port of ports) {
-      const address = `localhost:${port}`;
-      try {
-        await connectRpcPost(address, "Heartbeat", {}, csrfToken, 1500);
-        return {
-          available: true,
-          source: "process-scan",
-          address,
-          csrfToken,
-          exePath,
-          pid: proc.pid ?? null
-        };
-      } catch {
-        // Port may be HTTPS/LSP port rather than HTTP Connect port; keep probing.
+      // Probe IPv4 127.0.0.1 first (avoids macOS Node ::1 ECONNREFUSED when daemon binds 127.0.0.1), then localhost
+      for (const host of ["127.0.0.1", "localhost"]) {
+        const address = `${host}:${port}`;
+        try {
+          await connectRpcPost(address, "Heartbeat", {}, csrfToken, 1500);
+          return {
+            available: true,
+            source: "process-scan",
+            address,
+            csrfToken,
+            exePath,
+            pid: proc.pid ?? null
+          };
+        } catch {
+          // Port may be HTTPS/LSP port or bound on the other loopback family; keep probing.
+        }
       }
     }
   }
@@ -280,7 +302,13 @@ export function findAgyCli(options = {}) {
           path.join(env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "agy", "bin", "agy.cmd"),
           path.join(os.homedir(), ".local", "bin", "agy.exe")
         ]
-      : ["agy", path.join(os.homedir(), ".local", "bin", "agy"), "/usr/local/bin/agy"])
+      : [
+          "agy",
+          "/opt/homebrew/bin/agy",
+          "/usr/local/bin/agy",
+          path.join(os.homedir(), ".local", "bin", "agy"),
+          "/Applications/Antigravity.app/Contents/Resources/app/bin/agy"
+        ])
   ].filter(Boolean);
 
   for (const bin of candidates) {

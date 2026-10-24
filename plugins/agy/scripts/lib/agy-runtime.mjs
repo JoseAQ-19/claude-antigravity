@@ -28,18 +28,23 @@ export function normalizeDesktopModelTier(requestedModel, defaultTier = "pro") {
   return "pro";
 }
 
-export function normalizeUriPathForCompare(uriOrPath) {
+export function normalizeUriPathForCompare(uriOrPath, platform = process.platform) {
   let raw = String(uriOrPath ?? "").trim();
   if (!raw) return "";
   try {
     raw = decodeURIComponent(raw);
   } catch {}
   raw = raw.replace(/^file:\/\/\/?/i, "");
-  if (process.platform === "win32" && /^\/[a-zA-Z]:/.test(raw)) {
+  if (platform === "win32" && /^\/[a-zA-Z]:/.test(raw)) {
     raw = raw.slice(1);
+  } else if (platform !== "win32" && !raw.startsWith("/")) {
+    raw = `/${raw}`;
   }
   raw = raw.replace(/\\/g, "/").replace(/\/+$/, "");
-  return process.platform === "win32" ? raw.toLowerCase() : raw;
+  if (platform === "darwin") {
+    raw = raw.replace(/^\/private\/(var|tmp|etc)(\/|$)/, "/$1$2");
+  }
+  return platform === "win32" ? raw.toLowerCase() : raw;
 }
 
 export function fileUriToLocalPath(uri) {
