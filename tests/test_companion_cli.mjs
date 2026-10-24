@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
+const execFileAsync = promisify(execFile);
 const COMPANION = path.resolve("plugins/agy/scripts/agy-companion.mjs");
 const LIFECYCLE_HOOK = path.resolve("plugins/agy/scripts/session-lifecycle-hook.mjs");
 
@@ -21,28 +23,26 @@ test("agy-companion setup --json reports ready state and toggles review gate her
   const mockEnv = {
     ...process.env,
     CLAUDE_PLUGIN_DATA: tmpData,
-    ANTIGRAVITY_LS_ADDRESS: `localhost:${port}`,
+    ANTIGRAVITY_LS_ADDRESS: `127.0.0.1:${port}`,
     ANTIGRAVITY_CSRF_TOKEN: "mock-csrf-setup",
     AGY_DISABLE_CLI_SCAN: "1"
   };
 
   try {
-    const res = spawnSync(process.execPath, [COMPANION, "setup", "--enable-review-gate", "--json"], {
+    const { stdout } = await execFileAsync(process.execPath, [COMPANION, "setup", "--enable-review-gate", "--json"], {
       encoding: "utf8",
       env: mockEnv
     });
-    assert.equal(res.status, 0, res.stderr);
-    const payload = JSON.parse(res.stdout);
+    const payload = JSON.parse(stdout);
     assert.equal(payload.ready, true);
     assert.equal(payload.activeBackend, "desktop-live");
     assert.equal(payload.reviewGateEnabled, true);
 
-    const statusRes = spawnSync(process.execPath, [COMPANION, "status"], {
+    const { stdout: statusStdout } = await execFileAsync(process.execPath, [COMPANION, "status"], {
       encoding: "utf8",
       env: mockEnv
     });
-    assert.equal(statusRes.status, 0);
-    assert.match(statusRes.stdout, /No Antigravity jobs recorded/);
+    assert.match(statusStdout, /No Antigravity jobs recorded/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(tmpData, { recursive: true, force: true });
