@@ -285,10 +285,7 @@ export function findAgyCli(options = {}) {
       available: false,
       path: null,
       version: null,
-      installCommand:
-        process.platform === "win32"
-          ? "irm https://antigravity.google/cli/install.ps1 | iex"
-          : "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+      installUrl: "https://antigravity.google/download"
     };
   }
   const explicit = env.AGY_CLI_PATH;
@@ -332,9 +329,6 @@ export function findAgyCli(options = {}) {
     available: false,
     path: null,
     version: null,
-    installCommand:
-      process.platform === "win32"
-        ? "irm https://antigravity.google/cli/install.ps1 | iex"
-        : "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+    installUrl: "https://antigravity.google/download"
   };
 }

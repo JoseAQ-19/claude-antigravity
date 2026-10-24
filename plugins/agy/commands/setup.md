@@ -11,7 +11,4 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" setup --json $ARGUMENTS
 ```
 
 - If `ready` is `true`, present a clean summary showing the active engine (`desktop-live` or `cli-headless`), connection status, and whether the stop review gate is enabled.
-- If `ready` is `false` (neither Antigravity 2.0 Desktop is running nor `agy` CLI is installed), use `AskUserQuestion` once with:
-  - `Install agy CLI now (Recommended)`
-  - `Skip (I will open Antigravity 2.0 Desktop manually)`
-  If the user chooses install, run the `cli.installCommand` returned in the setup JSON and rerun `setup`.
+- If `ready` is `false` (neither Antigravity 2.0 Desktop is running nor `agy` CLI is installed), instruct the user to open Antigravity 2.0 Desktop or install it from `https://antigravity.google/download`, then rerun `/agy:setup`.
