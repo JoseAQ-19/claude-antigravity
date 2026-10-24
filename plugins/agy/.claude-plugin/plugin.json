@@ -1,0 +1,8 @@
+{
+  "name": "agy",
+  "version": "1.0.0",
+  "description": "Use Google Antigravity from Claude Code to delegate tasks, run reviews, or transfer full active conversations.",
+  "author": {
+    "name": "Local Engineering"
+  }
+}

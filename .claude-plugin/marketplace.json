@@ -1,0 +1,21 @@
+{
+  "name": "antigravity-cc",
+  "owner": {
+    "name": "Local Engineering"
+  },
+  "metadata": {
+    "description": "Google Antigravity companion plugin for Claude Code (task delegation, code review, and full session transfer with automatic next-step execution).",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agy",
+      "description": "Delegate tasks, reviews, and full Claude Code conversations to Google Antigravity (Dual Desktop RPC + agy CLI).",
+      "version": "1.0.0",
+      "author": {
+        "name": "Local Engineering"
+      },
+      "source": "./plugins/agy"
+    }
+  ]
+}

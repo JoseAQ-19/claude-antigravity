@@ -1,0 +1,15 @@
+# Project Progress — Claude Code ↔ Antigravity Plugin (`antigravity-plugin-cc`)
+Last Updated: 2026-10-24
+
+## Completed Tasks
+- [x] Fase 0.1–0.5: Investigación completa de `openai/codex-plugin-cc` y auditoría empírica de Antigravity 2.0 (`language_server.exe` + `agentapi` + `agy` CLI).
+- [x] Fase 1.0: Definición de `PRD.md` atómico con decisiones del usuario confirmadas (Modo Dual, `/agy:transfer` ejecuta el siguiente paso automáticamente, prefijo `/agy:*`).
+
+## In Progress / Pending Atomic Tasks
+- [ ] RF-01: Implementar `plugins/agy/scripts/lib/args.mjs` + `tests/test_args.mjs`
+- [ ] RF-02: Implementar `plugins/agy/scripts/lib/state.mjs` y `lib/git.mjs` + `tests/test_state_git.mjs`
+- [ ] RF-03: Implementar `plugins/agy/scripts/lib/claude-session-parser.mjs` + `tests/test_claude_session_parser.mjs`
+- [ ] RF-04: Implementar `plugins/agy/scripts/lib/ls-discovery.mjs` + `tests/test_ls_discovery.mjs`
+- [ ] RF-05: Implementar `plugins/agy/scripts/lib/agy-runtime.mjs` y `lib/render.mjs` + `tests/test_agy_runtime.mjs`
+- [ ] RF-06: Implementar `agy-companion.mjs`, `session-lifecycle-hook.mjs` y `stop-review-gate-hook.mjs` + `tests/test_companion_cli.mjs`
+- [ ] RF-07: Crear `.claude-plugin/marketplace.json`, `plugin.json`, `commands/*.md`, `agents/agy-rescue.md`, `skills/`, `prompts/`, validar con `claude plugin validate` e instalar en Claude Code.
