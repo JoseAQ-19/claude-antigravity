@@ -30,7 +30,7 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test": "node --test tests/test_*.mjs",
+    "test": "node scripts/run-tests.mjs",
     "test:live": "node --test tests/live/test_e2e_live.mjs",
     "verify": "node scripts/verify-release.mjs && npm test"
   }
