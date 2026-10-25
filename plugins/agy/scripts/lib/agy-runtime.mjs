@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,6 +27,25 @@ export function normalizeDesktopModelTier(requestedModel, defaultTier = "pro") {
   if (key.includes("lite")) return "flash_lite";
   if (key.includes("flash")) return "flash";
   return "pro";
+}
+
+export function normalizeCliModelArgs(requestedModel) {
+  if (!requestedModel) return [];
+  const raw = String(requestedModel).trim();
+  if (!raw) return [];
+  const lower = raw.toLowerCase();
+  // Desktop tier aliases ("pro", "flash", "flash_lite") are not model IDs in `agy` CLI:
+  // omit `--model` for "pro" (uses user's configured default model) and map fast tiers to `--effort`.
+  if (lower === "pro" || lower === "gemini-pro") {
+    return [];
+  }
+  if (lower === "flash" || lower === "gemini-flash") {
+    return ["--effort", "medium"];
+  }
+  if (lower === "flash_lite" || lower === "flash-lite" || lower === "lite" || lower === "fast") {
+    return ["--effort", "low"];
+  }
+  return ["--model", raw];
 }
 
 export function normalizeUriPathForCompare(uriOrPath, platform = process.platform) {
@@ -72,44 +92,57 @@ export async function getAntigravityStatus(cwd, options = {}) {
 }
 
 export async function ensureDesktopProjectId(conn, workspaceRoot) {
-  const targetNorm = normalizeUriPathForCompare(workspaceRoot);
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const targetNorm = normalizeUriPathForCompare(resolvedRoot);
+  let fallbackId = null;
   try {
     const listed = await connectRpcPost(conn.address, "ListProjects", {}, conn.csrfToken, 5000);
     const ids = Array.isArray(listed?.projectIds) ? listed.projectIds : [];
+    if (ids.includes("default-cli-project")) fallbackId = "default-cli-project";
+    else if (ids.includes("outside-of-project")) fallbackId = "outside-of-project";
+
     if (ids.length > 0) {
       const read = await connectRpcPost(conn.address, "ReadProjects", { ids }, conn.csrfToken, 8000);
       const projects = Array.isArray(read?.projects) ? read.projects : [];
       for (const proj of projects) {
         const resources = proj?.projectResources?.resources ?? [];
         for (const res of resources) {
-          if (res?.folderUri && normalizeUriPathForCompare(res.folderUri) === targetNorm) {
+          const resourceUri = res?.folderUri || res?.gitFolder?.folderUri || null;
+          if (resourceUri && normalizeUriPathForCompare(resourceUri) === targetNorm) {
             return proj.id;
           }
         }
       }
     }
 
-    // Create project in Antigravity Desktop if this folder has not been registered yet
-    const folderUri = pathToFileURL(path.resolve(workspaceRoot)).href;
+    // Create project in Antigravity Desktop if this folder has not been registered yet.
+    // Note: CreateProject requires a non-empty `project.id` UUID and returns `{}` on HTTP 200.
+    const folderUri = pathToFileURL(resolvedRoot).href;
+    const isGitWorkspace = fs.existsSync(path.join(resolvedRoot, ".git"));
+    const newId = randomUUID();
+    const resourceEntry = isGitWorkspace
+      ? { gitFolder: { folderUri, allowWrite: true } }
+      : { folderUri };
+
     const created = await connectRpcPost(
       conn.address,
       "CreateProject",
       {
         project: {
-          name: path.basename(workspaceRoot) || "workspace",
+          id: newId,
+          name: path.basename(resolvedRoot) || "workspace",
           projectResources: {
-            resources: [{ folderUri }]
+            resources: [resourceEntry]
           }
         }
       },
       conn.csrfToken,
       8000
     );
-    if (created?.project?.id) return created.project.id;
+    return created?.project?.id || newId;
   } catch {
-    // Non-fatal: agentapi still starts conversations even if project resolution fails.
+    return fallbackId;
   }
-  return null;
 }
 
 function spillLargePromptIfNeeded(workspaceRoot, prompt, label = "prompt") {
@@ -144,13 +177,28 @@ function invokeAgentApi(conn, args, projectId = null) {
   else delete env.ANTIGRAVITY_PROJECT_ID;
   delete env.ANTIGRAVITY_CONVERSATION_ID;
 
-  const stdout = execFileSync(conn.exePath, ["agentapi", ...args], {
-    encoding: "utf8",
-    env,
-    windowsHide: true,
-    timeout: 30000,
-    maxBuffer: 10 * 1024 * 1024
-  });
+  let stdout = "";
+  try {
+    stdout = execFileSync(conn.exePath, ["agentapi", ...args], {
+      encoding: "utf8",
+      env,
+      windowsHide: true,
+      timeout: 30000,
+      maxBuffer: 10 * 1024 * 1024
+    });
+  } catch (err) {
+    const errStdout = String(err?.stdout ?? "").trim();
+    const errStderr = String(err?.stderr ?? "").trim();
+    if (errStdout.startsWith("{")) {
+      try {
+        const parsedErr = JSON.parse(errStdout);
+        if (parsedErr.error) throw new Error(`Antigravity agentapi error: ${parsedErr.error}`);
+      } catch (inner) {
+        if (inner instanceof Error && inner.message.startsWith("Antigravity agentapi error:")) throw inner;
+      }
+    }
+    throw new Error(`Antigravity agentapi failed: ${(errStderr || errStdout || err.message).slice(0, 400)}`);
+  }
   const parsed = stdout.trim() ? JSON.parse(stdout) : {};
   if (parsed.error) {
     throw new Error(`Antigravity agentapi error: ${parsed.error}`);
@@ -397,9 +445,9 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
   };
 }
 
-export async function runCliTurn(cliInfo, cwd, options = {}) {
-  const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const args = ["--print", "--output-format", "stream-json"];
+export function buildCliTurnArgs(workspaceRoot, options = {}) {
+  const safePrompt = spillLargePromptIfNeeded(workspaceRoot, options.prompt, options.kind || "cli");
+  const args = ["--output-format", "stream-json", "--disable-slash-commands"];
   if (options.resumeConversationId) {
     args.push("--conversation", options.resumeConversationId);
   }
@@ -408,14 +456,78 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
   } else {
     args.push("--mode=plan");
   }
-  if (options.model) {
-    args.push("--model", String(options.model));
-  }
-  args.push(options.prompt);
+  args.push(...normalizeCliModelArgs(options.model));
+  // Attach prompt directly to `--print=...` at the end so `agy` never consumes another flag as the prompt.
+  args.push(`--print=${safePrompt}`);
+  return args;
+}
 
-  const isCmd = process.platform === "win32" && cliInfo.path.toLowerCase().endsWith(".cmd");
-  const spawnFile = isCmd ? (process.env.ComSpec || "cmd.exe") : cliInfo.path;
-  const spawnArgs = isCmd ? ["/d", "/s", "/c", cliInfo.path, ...args] : args;
+export function extractCliStreamEvent(ev) {
+  if (!ev || typeof ev !== "object") {
+    return { conversationId: null, streamedDelta: "", finalResponse: null, errorMessage: null, thinking: null };
+  }
+
+  const conversationId =
+    ev.conversation_id ||
+    ev.conversationId ||
+    ev.session_id ||
+    ev.sessionId ||
+    ev.init?.conversation_id ||
+    ev.step_update?.conversation_id ||
+    ev.result?.conversation_id ||
+    null;
+
+  let streamedDelta = "";
+  let finalResponse = null;
+  let errorMessage = null;
+  let thinking = typeof ev.thinking === "string" ? ev.thinking : null;
+
+  // Real `agy --output-format stream-json` v1.4+ schema (`event: "init" | "step_update" | "result"`)
+  if (ev.step_update && typeof ev.step_update === "object") {
+    const su = ev.step_update;
+    if ((su.step_type === "agent_response" || !su.step_type) && typeof su.text_delta === "string") {
+      streamedDelta = su.text_delta;
+    }
+    if (typeof su.thinking_delta === "string" && su.thinking_delta.trim()) {
+      thinking = su.thinking_delta;
+    }
+  }
+
+  if (ev.result && typeof ev.result === "object") {
+    if (ev.result.status === "ERROR" || ev.result.error) {
+      errorMessage = String(ev.result.error || "agy CLI returned status ERROR");
+    }
+    if (typeof ev.result.response === "string" && ev.result.response.trim()) {
+      finalResponse = ev.result.response;
+    }
+  } else if (typeof ev.result === "string") {
+    finalResponse = ev.result;
+  } else if (typeof ev.error === "string" && ev.error.trim()) {
+    errorMessage = ev.error;
+  } else if (typeof ev.text === "string") {
+    streamedDelta = ev.text;
+  } else if (typeof ev.content === "string" && (ev.type === "assistant" || ev.type === "message" || ev.type === "result")) {
+    finalResponse = ev.content;
+  }
+
+  return { conversationId, streamedDelta, finalResponse, errorMessage, thinking };
+}
+
+export async function runCliTurn(cliInfo, cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const preGitPaths = snapshotGitStatusPaths(workspaceRoot);
+  const args = buildCliTurnArgs(workspaceRoot, options);
+
+  let resolvedCliPath = cliInfo.path;
+  if (process.platform === "win32" && resolvedCliPath.toLowerCase().endsWith(".cmd")) {
+    const siblingExe = resolvedCliPath.slice(0, -4) + ".exe";
+    if (fs.existsSync(siblingExe)) resolvedCliPath = siblingExe;
+  }
+
+  const isCmd = process.platform === "win32" && resolvedCliPath.toLowerCase().endsWith(".cmd");
+  const safeCmdArgs = isCmd ? args.map((a) => String(a).replace(/\r?\n/g, " ")) : args;
+  const spawnFile = isCmd ? (process.env.ComSpec || "cmd.exe") : resolvedCliPath;
+  const spawnArgs = isCmd ? ["/d", "/s", "/c", resolvedCliPath, ...safeCmdArgs] : args;
   const timeoutMs = options.timeoutMs ?? 20 * 60 * 1000;
 
   return new Promise((resolve, reject) => {
@@ -430,7 +542,10 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
     let stderrBuf = "";
     let conversationId = options.resumeConversationId || null;
     let timedOut = false;
-    const textParts = [];
+    let streamedText = "";
+    let explicitResultText = null;
+    let explicitError = null;
+    const nonJsonLines = [];
     const reasoningSummary = [];
 
     const timer = setTimeout(() => {
@@ -442,26 +557,25 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
       const trimmed = line.trim();
       if (!trimmed) return;
       if (!trimmed.startsWith("{")) {
-        textParts.push(trimmed);
+        nonJsonLines.push(trimmed);
         return;
       }
       try {
         const ev = JSON.parse(trimmed);
-        const cid = ev.conversation_id || ev.conversationId || ev.session_id || ev.sessionId;
-        if (cid && !conversationId) {
-          conversationId = cid;
+        const parsed = extractCliStreamEvent(ev);
+        if (parsed.conversationId && !conversationId) {
+          conversationId = parsed.conversationId;
           options.onStarted?.({ conversationId, backend: "cli-headless" });
         }
-        if (typeof ev.result === "string") textParts.push(ev.result);
-        else if (typeof ev.text === "string") textParts.push(ev.text);
-        else if (typeof ev.content === "string" && (ev.type === "assistant" || ev.type === "message" || ev.type === "result")) {
-          textParts.push(ev.content);
-        }
-        if (typeof ev.thinking === "string") {
-          reasoningSummary.push(ev.thinking.trim().split(/\r?\n/)[0].slice(0, 180));
+        if (parsed.streamedDelta) streamedText += parsed.streamedDelta;
+        if (parsed.finalResponse != null) explicitResultText = parsed.finalResponse;
+        if (parsed.errorMessage) explicitError = parsed.errorMessage;
+        if (parsed.thinking) {
+          const line0 = parsed.thinking.trim().split(/\r?\n/)[0]?.slice(0, 180);
+          if (line0 && !reasoningSummary.includes(line0)) reasoningSummary.push(line0);
         }
       } catch {
-        textParts.push(trimmed);
+        nonJsonLines.push(trimmed);
       }
     };
 
@@ -486,17 +600,35 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
     child.on("close", (code) => {
       clearTimeout(timer);
       if (stdoutBuf.trim()) processLine(stdoutBuf);
-      const finalMessage = textParts.join("\n").trim();
+
+      let touchedFiles = [];
+      if (preGitPaths) {
+        const postGitPaths = snapshotGitStatusPaths(workspaceRoot);
+        if (postGitPaths) {
+          touchedFiles = [...postGitPaths].filter((p) => !preGitPaths.has(p));
+        }
+      }
+
+      const rawExit = timedOut ? 124 : code ?? 0;
+      const exitStatus = explicitError && rawExit === 0 ? 1 : rawExit;
+      const assembledText = (
+        explicitResultText ??
+        (streamedText.trim() || nonJsonLines.join("\n").trim())
+      ).trim();
+
+      const finalMessage =
+        assembledText ||
+        explicitError ||
+        (timedOut ? `agy CLI timed out after ${Math.round(timeoutMs / 1000)}s.` : stderrBuf.trim());
+
       resolve({
-        exitStatus: timedOut ? 124 : code ?? 0,
+        exitStatus,
         backend: "cli-headless",
-        conversationId,
+        conversationId: conversationId || null,
         projectId: null,
-        finalMessage:
-          finalMessage ||
-          (timedOut ? `agy CLI timed out after ${Math.round(timeoutMs / 1000)}s.` : stderrBuf.trim()),
+        finalMessage,
         reasoningSummary: reasoningSummary.slice(-6),
-        touchedFiles: [],
+        touchedFiles,
         stderr: stderrBuf.trim()
       });
     });
@@ -506,8 +638,9 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
 export async function runDualAntigravityTurn(cwd, options = {}) {
   const status = await getAntigravityStatus(cwd, options.discoveryOptions);
   if (!status.ready) {
+    const installHint = status.cli.installUrl || status.cli.installCommand || "https://antigravity.google/download";
     throw new Error(
-      `Google Antigravity is not running and 'agy' CLI is not installed. Open Antigravity 2.0 Desktop or install the CLI (${status.cli.installCommand}), then run /agy:setup.`
+      `Google Antigravity is not running and 'agy' CLI is not installed. Open Antigravity 2.0 Desktop or install from ${installHint}, then run /agy:setup.`
     );
   }
 

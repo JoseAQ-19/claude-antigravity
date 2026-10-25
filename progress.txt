@@ -1,5 +1,5 @@
-# Project Progress — `claude-antigravity` (`v1.1.0`)
-Last Updated: 2026-10-24
+# Project Progress — `claude-antigravity` (`v1.1.1`)
+Last Updated: 2026-10-25
 
 ## Completed Tasks
 - [x] Fase 0.1–0.5: Investigación completa de `openai/codex-plugin-cc` y auditoría empírica de Antigravity 2.0 (`language_server` + `agentapi` + `agy` CLI).
@@ -19,4 +19,5 @@ Last Updated: 2026-10-24
 - [x] RF-12 (`/agy:undo` & `/agy:fork` — Idea 6): Implementados vista previa/aplicación de rollback quirúrgico (`GetRevertPreview` / `RevertToCascadeStep` + fallback git) y bifurcación de conversaciones (`ForkConversation`) en `lib/agy-inspector.mjs` + validados con `tests/test_inspector_rpc.mjs`.
 - [x] RF-13 (`/agy:sync-memory` — Idea 7): Implementada sincronización bidireccional no destructiva con backup `.bak` entre `CLAUDE.md` y `AGENTS.md` + `.agents/rules/claude-memory-sync.md` (`trigger: always_on`) en `lib/media-plan-memory.mjs` + validada con `tests/test_media_plan_memory.mjs`.
 - [x] RF-14 (Rebrand `claude-antigravity` `v1.1.0` & Flagship Docs): Adoptado nombre ganador `JoseAQ-19/claude-antigravity` (`agy@claude-antigravity`), actualizados los 16 comandos `/agy:*`, `skills/claude-antigravity/SKILL.md`, `README.md` insignia (EN + ES), `CHANGELOG.md`, `scripts/verify-release.mjs` y `tests/test_release_readiness.mjs` (22/22 tests unitarios + 1/1 E2E live en verde).
-- [x] Fase 4.0 (Publicación Open Source & Preparación Directorio Oficial Claude Desktop): Empaquetados `README.md`, `LICENSE`, `NOTICE` y `CHANGELOG.md` dentro de `plugins/agy/` para compatibilidad `git-subdir` con `anthropics/claude-plugins-official`, creado el repositorio público `JoseAQ-19/claude-antigravity`, subida la rama `main` y publicada la release `v1.1.0`.
+- [x] Fase 4.0 (Publicación Open Source & Envío Oficial al Directorio de Anthropic): Empaquetados `README.md`, `LICENSE`, `NOTICE`, `CHANGELOG.md` e `icon.png` (`1024x1024`) dentro de `plugins/agy/`, publicado `JoseAQ-19/claude-antigravity` (`v1.1.0`, CI 6/6 en verde), enviado al Directorio Oficial de Claude Desktop y configurado el webhook oficial de GitHub (`id: 702737232`, `status_code: 200 OK`).
+- [x] Fase 4.1 (Auditoría Profunda & Hotfix `v1.1.1`): Corregidos los 9 fallos reales detectados en producción (`--print=<prompt>` al final en `agy` CLI v1.4+, mapeo de modelos/effort en CLI, parser `stream-json` v1.4+, `gitFolder.folderUri` + UUID `CreateProject` en `ensureDesktopProjectId`, descubrimiento Windows 10x más rápido con `netstat -ano`, renderizado seguro sin `null` en fallos, y deduplicación/compactación de `touchedFiles` en sesiones de +1.000 turnos) + nuevos tests de regresión.

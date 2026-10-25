@@ -136,6 +136,8 @@ function parseOfflineBrainTranscript(transcriptFile) {
 export async function pullFromAntigravity(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const normWs = normalizeUriPathForCompare(workspaceRoot);
+  const explicitCid =
+    options.conversationId && options.conversationId !== "null" ? options.conversationId : null;
   const ls = await discoverLanguageServer(options.discoveryOptions);
 
   if (ls.available) {
@@ -170,7 +172,7 @@ export async function pullFromAntigravity(cwd, options = {}) {
     }
 
     const targetId =
-      options.conversationId ||
+      explicitCid ||
       (filtered[0]?.conversationId ?? getLatestConversationId(workspaceRoot) ?? allItems[0]?.conversationId);
 
     if (!targetId) {
@@ -264,8 +266,8 @@ export async function pullFromAntigravity(cwd, options = {}) {
     };
   }
 
-  const chosen = options.conversationId
-    ? offlineEntries.find((e) => e.conversationId === options.conversationId)
+  const chosen = explicitCid
+    ? offlineEntries.find((e) => e.conversationId === explicitCid)
     : offlineEntries[0];
 
   if (!chosen) {
@@ -360,7 +362,8 @@ export async function forkAntigravityConversation(cwd, options = {}) {
     throw new Error("`/agy:fork` requires Antigravity 2.0 Desktop to be running (`desktop-live`).");
   }
 
-  const sourceId = options.conversationId || getLatestConversationId(workspaceRoot);
+  const cleanCid = (v) => (v && v !== "null" && v !== "undefined" ? v : null);
+  const sourceId = cleanCid(options.conversationId) || cleanCid(getLatestConversationId(workspaceRoot));
   if (!sourceId) {
     throw new Error("No active Antigravity conversation ID found to fork. Pass a <conversation-id> or run /agy:transfer first.");
   }
@@ -403,8 +406,14 @@ export async function forkAntigravityConversation(cwd, options = {}) {
 export async function undoAntigravityTurn(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const jobs = listJobs(workspaceRoot);
-  const latestJob = options.jobId ? jobs.find((j) => j.id === options.jobId) : jobs[0];
-  const targetId = options.conversationId || latestJob?.conversationId || getLatestConversationId(workspaceRoot);
+  const cleanCid = (v) => (v && v !== "null" && v !== "undefined" ? v : null);
+  const latestJob = options.jobId
+    ? jobs.find((j) => j.id === options.jobId)
+    : jobs.find((j) => cleanCid(j.conversationId) || j.touchedFiles?.length) || jobs[0];
+  const targetId =
+    cleanCid(options.conversationId) ||
+    cleanCid(latestJob?.conversationId) ||
+    cleanCid(getLatestConversationId(workspaceRoot));
 
   const ls = await discoverLanguageServer(options.discoveryOptions);
   let targetStep = options.stepIndex != null ? Number(options.stepIndex) : null;

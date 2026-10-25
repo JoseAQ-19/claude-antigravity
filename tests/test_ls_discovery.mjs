@@ -6,6 +6,7 @@ import {
   extractCsrfTokenFromCmd,
   extractExeFromCmd,
   parseLsofListeningPorts,
+  parseNetstatListeningPortsByPid,
   parseSsListeningPortsForPid
 } from "../plugins/agy/scripts/lib/ls-discovery.mjs";
 
@@ -43,6 +44,16 @@ test("parseLsofListeningPorts and parseSsListeningPortsForPid parse POSIX port o
     'LISTEN 0      4096   127.0.0.1:49999     0.0.0.0:*         users:(("other_proc",pid=1111,fd=4))'
   ].join("\n");
   assert.deepEqual(parseSsListeningPortsForPid(ssSample, 8842), [49321]);
+
+  const netstatSample = [
+    "Active Connections",
+    "  Proto  Local Address          Foreign Address        State           PID",
+    "  TCP    127.0.0.1:54356        0.0.0.0:0              LISTENING       18052",
+    "  TCP    127.0.0.1:54357        0.0.0.0:0              LISTENING       18052",
+    "  TCP    127.0.0.1:54357        127.0.0.1:60123        ESTABLISHED     18052"
+  ].join("\r\n");
+  const byPid = parseNetstatListeningPortsByPid(netstatSample);
+  assert.deepEqual(byPid.get(18052), [54356, 54357]);
 });
 
 test("discoverLanguageServer probes mock candidate ports, validates CSRF token, and prefers hub process", async () => {

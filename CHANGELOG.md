@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-10-25
+
+### Fixed
+- **`cli-headless` (`agy` v1.4+ Flag Ordering & Stream-JSON Schema):** Fixed `--print` consuming `--output-format` as its prompt by attaching `--print=<prompt>` as the final flag, added prompt spilling (`<= 12k` chars) for CLI turns, avoided sending invalid `--model pro` tier aliases to `agy` CLI (mapping tiers cleanly to default/`--effort`), and updated `extractCliStreamEvent` for `agy` v1.4+ nested `init` / `step_update` / `result.response` NDJSON events.
+- **Desktop Git Project Resolution (`ensureDesktopProjectId`):** Matched `gitFolder.folderUri` resources in `ReadProjects` (used by Antigravity 2.0 for Git repositories), supplied mandatory UUID `project.id` to `CreateProject` (handling `{}` 200 responses), and added `default-cli-project` fallback so `agentapi` never fails on Hub instances.
+- **Fast Windows Process Discovery (`ls-discovery.mjs`):** Replaced per-process `Get-NetTCPConnection` PowerShell loops (which could exceed 6s under load) with instant native `netstat -ano -p tcp` port mapping + single lightweight WMI query (~10x faster discovery).
+- **Transfer Failure Diagnostics & Session Parser Compaction:** Prevented failed transfers from rendering fake success headers or `agy --conversation null` / `/agy:pull null` hints, deduplicated `touchedFiles` across `/` and `\` separators, filtered scratchpad paths, and capped inline touched-file headers on 1,000+ turn transcripts.
+
 ## [1.1.0] - 2026-10-24
 
 ### Added

@@ -111,15 +111,15 @@ function findResumableJob(workspaceRoot, currentSessionOnly = false) {
   const jobs = listJobs(workspaceRoot).filter((j) =>
     !currentSessionOnly || !sessionId ? true : j.sessionId === sessionId
   );
-  return (
-    jobs.find(
-      (j) =>
-        (j.kind === "task" || j.kind === "transfer" || j.kind === "media") &&
-        j.conversationId &&
-        j.status !== "queued" &&
-        j.status !== "running"
-    ) ?? null
+  const eligible = jobs.filter(
+    (j) =>
+      (j.kind === "task" || j.kind === "transfer" || j.kind === "media") &&
+      j.conversationId &&
+      j.conversationId !== "null" &&
+      j.status !== "queued" &&
+      j.status !== "running"
   );
+  return eligible.find((j) => j.status === "completed") ?? eligible[0] ?? null;
 }
 
 function spawnBackgroundWorker(workspaceRoot, jobId) {
@@ -161,8 +161,8 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
     const payload = {
       status: turn.exitStatus,
       backend: turn.backend,
-      conversationId: turn.conversationId,
-      resumeCommand: `agy --conversation ${turn.conversationId}`,
+      conversationId: turn.conversationId || null,
+      resumeCommand: turn.conversationId ? `agy --conversation ${turn.conversationId}` : null,
       sourcePath: request.sourcePath,
       handoffPath: request.handoffPath,
       focusedUi: request.focusUi !== false && turn.backend === "desktop-live",
@@ -423,7 +423,8 @@ async function handleSetup(argv) {
     nextSteps.push("Open Antigravity 2.0 Desktop to enable live visual conversation handoffs, quota HUD & RPC.");
   }
   if (!status.cli.available) {
-    nextSteps.push(`Optional headless fallback: install \`agy\` CLI via \`${status.cli.installCommand}\`.`);
+    const installHint = status.cli.installUrl || status.cli.installCommand || "https://antigravity.google/download";
+    nextSteps.push(`Optional headless fallback: install \`agy\` CLI from ${installHint}.`);
   }
   if (!config.stopReviewGate) {
     nextSteps.push("Optional: run `/agy:setup --enable-review-gate` to verify Claude turns before stopping.");
@@ -475,7 +476,10 @@ async function handleTask(argv) {
     ? fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8")
     : positionals.join(" ").trim();
 
-  let resumeConversationId = options.conversation || null;
+  let resumeConversationId =
+    options.conversation && options.conversation !== "null" && options.conversation !== "undefined"
+      ? options.conversation
+      : null;
   if (!resumeConversationId && (options.resume || options["resume-last"]) && !options.fresh) {
     const prev = findResumableJob(workspaceRoot, false);
     if (!prev?.conversationId) {

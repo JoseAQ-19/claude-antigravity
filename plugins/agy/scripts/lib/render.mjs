@@ -18,7 +18,7 @@ export function renderSetupReport(report) {
     `- **Antigravity CLI (\`agy\`):** ${
       report.cli.available
         ? `Installed (\`${report.cli.path}\` — ${report.cli.version})`
-        : `Not installed (optional fallback: \`${report.cli.installCommand}\`)`
+        : `Not installed (optional fallback: ${report.cli.installUrl || report.cli.installCommand || "https://antigravity.google/download"})`
     }`,
     `- **Stop Review Gate:** ${report.reviewGateEnabled ? "Enabled" : "Disabled"}`
   ];
@@ -32,8 +32,12 @@ export function renderSetupReport(report) {
 }
 
 export function renderTurnResult(result, meta = {}) {
+  const failed = Number(result.exitStatus ?? 0) !== 0 && !result.conversationId;
+  const heading = failed
+    ? `## ${meta.title || "Antigravity Task"} (FAILED)`
+    : `## ${meta.title || "Antigravity Result"}`;
   const lines = [
-    `## ${meta.title || "Antigravity Result"}`,
+    heading,
     `- **Engine:** \`${result.backend}\``,
     result.conversationId ? `- **Antigravity Conversation ID:** \`${result.conversationId}\`` : null,
     result.conversationId ? `- **Resume in CLI:** \`agy --conversation ${result.conversationId}\`` : null,
@@ -53,11 +57,28 @@ export function renderTurnResult(result, meta = {}) {
 }
 
 export function renderTransferResult(payload) {
+  const hasConversation = Boolean(payload.conversationId && payload.conversationId !== "null");
+  const failed = (Number(payload.status ?? 0) !== 0 && !hasConversation) || !hasConversation;
+
+  if (failed) {
+    const failLines = [
+      `## Google Antigravity Transfer Failed`,
+      `- **Attempted Engine:** \`${payload.backend}\``,
+      `- **Status:** No Antigravity conversation was created (\`exit ${payload.status ?? 1}\`)`,
+      payload.handoffPath ? `- **Saved Session Archive (preserved):** \`${payload.handoffPath}\`` : null,
+      "",
+      "### Error Details",
+      "",
+      payload.finalMessage || "Antigravity failed before creating a conversation. Run `/agy:setup` to verify your Desktop / CLI connection."
+    ].filter((x) => x !== null);
+    return `${failLines.join("\n")}\n`;
+  }
+
   const lines = [
     `## Claude Session Transferred to Google Antigravity`,
     `- **Engine:** \`${payload.backend}\`${payload.focusedUi ? " (Opened & focused in Antigravity 2.0 Desktop)" : ""}`,
     `- **Antigravity Conversation ID:** \`${payload.conversationId}\``,
-    `- **Resume in Antigravity CLI:** \`${payload.resumeCommand}\``,
+    `- **Resume in Antigravity CLI:** \`agy --conversation ${payload.conversationId}\``,
     `- **Continue from Claude Code:** \`/agy:rescue --resume "<next instruction>"\``,
     `- **Pull Back into Claude Later:** \`/agy:pull ${payload.conversationId}\``,
     `- **Verbatim Session Archive:** \`${payload.handoffPath}\``,

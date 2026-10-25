@@ -131,12 +131,29 @@ function cleanUserText(content) {
   return "";
 }
 
-function summarizeToolUse(block, touchedFiles) {
+function isEphemeralScratchPath(rawPath) {
+  const norm = String(rawPath ?? "").replace(/\\/g, "/").toLowerCase();
+  const tmpNorm = os.tmpdir().replace(/\\/g, "/").toLowerCase();
+  return (
+    (tmpNorm && norm.startsWith(tmpNorm)) ||
+    norm.includes("/.claude/projects/") ||
+    norm.includes("/.claude/agy-handoffs/") ||
+    norm.includes("/appdata/local/temp/claude/")
+  );
+}
+
+function summarizeToolUse(block, touchedFilesMap) {
   const name = block.name || "Tool";
   const input = block.input && typeof block.input === "object" ? block.input : {};
   const filePath = input.file_path || input.path || input.notebook_path || null;
   if (filePath && /^(Edit|MultiEdit|Write|NotebookEdit)$/i.test(name)) {
-    touchedFiles.add(String(filePath));
+    const strPath = String(filePath).trim();
+    if (strPath && !isEphemeralScratchPath(strPath)) {
+      const key = normalizeComparePath(strPath);
+      // Re-insert so the Map preserves chronological order ending with most recently touched files
+      touchedFilesMap.delete(key);
+      touchedFilesMap.set(key, path.normalize(strPath));
+    }
   }
   if (filePath) return `\`${name}(${filePath})\``;
   if (input.command) {
@@ -151,7 +168,7 @@ export function parseClaudeTranscript(transcriptPath) {
   const raw = fs.readFileSync(transcriptPath, "utf8");
   const lines = raw.split(/\r?\n/);
   const turns = [];
-  const touchedFiles = new Set();
+  const touchedFilesMap = new Map();
   const seenAssistantMsgIds = new Map();
 
   let sessionId = path.basename(transcriptPath, ".jsonl");
@@ -220,7 +237,7 @@ export function parseClaudeTranscript(transcriptPath) {
           const tid = block.id || `${block.name}:${JSON.stringify(block.input ?? {})}`;
           if (!entry.seenToolIds.has(tid)) {
             entry.seenToolIds.add(tid);
-            entry.tools.push(summarizeToolUse(block, touchedFiles));
+            entry.tools.push(summarizeToolUse(block, touchedFilesMap));
           }
         }
       }
@@ -250,7 +267,7 @@ export function parseClaudeTranscript(transcriptPath) {
     gitBranch,
     title,
     turns: normalizedTurns,
-    touchedFiles: [...touchedFiles]
+    touchedFiles: [...touchedFilesMap.values()]
   };
 }
 
@@ -336,12 +353,26 @@ export function buildTransferHandoffBundle(transcriptPath, workspaceCwd, options
         "Ingest this transferred Claude Code session context, verify current workspace state in read-only mode, briefly confirm what has been done so far, and state the exact next step you are ready to execute when asked."
       ].join("\n");
 
+  const wsResolved = path.resolve(workspaceCwd);
+  const compactTouched = parsed.touchedFiles.map((f) => {
+    const rel = path.relative(wsResolved, path.resolve(wsResolved, f));
+    return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel.replace(/\\/g, "/") : f;
+  });
+  const recentTouched = compactTouched.slice(-25);
+  const extraTouchedCount = Math.max(0, compactTouched.length - recentTouched.length);
+  const touchedBullet =
+    recentTouched.length > 0
+      ? `- Previously Touched Files: ${recentTouched.map((f) => `\`${f}\``).join(", ")}${
+          extraTouchedCount > 0 ? ` *(+${extraTouchedCount} earlier files listed in archive)*` : ""
+        }`
+      : null;
+
   const prompt = [
     `# Session Transfer from Claude Code: ${parsed.title}`,
     `- Workspace: \`${workspaceCwd}\``,
     parsed.gitBranch ? `- Git Branch: \`${parsed.gitBranch}\`` : null,
     `- Full Handoff Archive: \`${handoffPath}\``,
-    parsed.touchedFiles.length > 0 ? `- Previously Touched Files: ${parsed.touchedFiles.map((f) => `\`${f}\``).join(", ")}` : null,
+    touchedBullet,
     truncatedNote,
     directiveBlock,
     "",

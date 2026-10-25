@@ -152,25 +152,73 @@ export function findDefaultLanguageServerExe() {
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 
-function listCandidateProcessesWindows() {
-  const psScript = [
-    "$ErrorActionPreference='SilentlyContinue';",
-    "$procs = Get-CimInstance Win32_Process -Filter \"Name LIKE 'language_server%'\" | ForEach-Object {",
-    "  $ports = @(Get-NetTCPConnection -OwningProcess $_.ProcessId -State Listen | Select-Object -ExpandProperty LocalPort);",
-    "  [PSCustomObject]@{ pid = $_.ProcessId; cmd = $_.CommandLine; ports = $ports }",
-    "};",
-    "if ($procs) { $procs | ConvertTo-Json -Compress } else { '[]' }"
-  ].join(" ");
+export function parseNetstatListeningPortsByPid(netstatOutput) {
+  const byPid = new Map();
+  for (const line of String(netstatOutput ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("TCP")) continue;
+    const cols = trimmed.split(/\s+/);
+    if (cols.length < 5) continue;
+    const localAddr = cols[1];
+    const foreignAddr = cols[2];
+    const state = cols[3];
+    const pid = Number(cols[cols.length - 1]);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    // Match LISTENING (or locale-agnostic 0.0.0.0:0 / [::]:0 / *:0 foreign endpoint)
+    const isListening =
+      state.toUpperCase() === "LISTENING" ||
+      foreignAddr === "0.0.0.0:0" ||
+      foreignAddr === "[::]:0" ||
+      foreignAddr.endsWith(":0");
+    if (!isListening) continue;
+    const portMatch = localAddr.match(/:(\d+)$/);
+    if (!portMatch) continue;
+    const port = Number(portMatch[1]);
+    if (!byPid.has(pid)) byPid.set(pid, []);
+    const arr = byPid.get(pid);
+    if (!arr.includes(port)) arr.push(port);
+  }
+  return byPid;
+}
 
-  const res = spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", psScript], {
+function resolveWindowsPowerShellExe() {
+  const sysRoot = process.env.SystemRoot || process.env.windir || "C:\\Windows";
+  const full = path.join(sysRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  return fs.existsSync(full) ? full : "powershell";
+}
+
+function listCandidateProcessesWindows() {
+  // 1. Collect listening ports via native netstat (~15ms, avoids slow NetTCPIP PowerShell module load)
+  const netstatRes = spawnSync("netstat", ["-ano", "-p", "tcp"], {
     encoding: "utf8",
     windowsHide: true,
-    timeout: 6000
+    timeout: 4000
+  });
+  const portsByPid = netstatRes.status === 0 ? parseNetstatListeningPortsByPid(netstatRes.stdout) : new Map();
+
+  // 2. Single lightweight WMI query for language_server command lines only
+  const psScript = [
+    "$ErrorActionPreference='SilentlyContinue';",
+    "$procs = @(Get-CimInstance Win32_Process -Filter \"Name LIKE 'language_server%'\" | ForEach-Object {",
+    "  [PSCustomObject]@{ pid = $_.ProcessId; cmd = $_.CommandLine }",
+    "});",
+    "if ($procs.Count -gt 0) { $procs | ConvertTo-Json -Compress } else { '[]' }"
+  ].join(" ");
+
+  const res = spawnSync(resolveWindowsPowerShellExe(), ["-NoProfile", "-NonInteractive", "-Command", psScript], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 12000
   });
   if (res.status !== 0 || !res.stdout.trim()) return [];
   try {
     const parsed = JSON.parse(res.stdout.trim());
-    return Array.isArray(parsed) ? parsed : [parsed];
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.map((item) => ({
+      pid: item.pid,
+      cmd: item.cmd,
+      ports: portsByPid.get(Number(item.pid)) ?? []
+    }));
   } catch {
     return [];
   }
