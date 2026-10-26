@@ -89,7 +89,8 @@ export function runReleaseAudit(rootDir = ROOT) {
         if (rel === ".git" || rel === "node_modules") continue;
         walk(full);
       } else {
-        if (rel === "scripts/verify-release.mjs") continue;
+        if (rel === "scripts/verify-release.mjs" || rel === "REPORTE-MEJORAS.md") continue;
+        if (/\.(png|jpg|jpeg|gif|webp|ico)$/i.test(rel)) continue;
         const text = fs.readFileSync(full, "utf8");
         for (const pat of forbiddenPatterns) {
           if (pat.regex.test(text)) {

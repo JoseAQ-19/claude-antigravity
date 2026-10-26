@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-10-26
+
+### Fixed
+- **False `failed` Job Status & Premature Loop Exit on Long Multi-Step Trajectories (`runDesktopTurn`):** Fixed polling loop exiting prematurely between tool calls while `GetCascadeTrajectory.status` was still `CASCADE_RUN_STATUS_RUNNING` (`isTrajectoryRunning`), fixed `exitStatus` returning `1` when a conversation finished cleanly without prose output, and added explicit `exitStatus` logging to job `.log` files and `/agy:status <job-id>`.
+- **Per-Backend `--model` Validation & Unified Canonical Tier Map (`UNIFIED_MODEL_TIERS`):** Added a single canonical tier map (`pro` -> `gemini-4-argon-high`, `flash` -> `gemini-3.8-flash-medium`, `flash_lite` -> `gemini-3.8-flash-low`) across `desktop-live` and `cli-headless`, added `--backend <auto|desktop|cli>`, and strictly rejected unsupported/concrete CLI model IDs on `desktop-live` upfront before creating any job (eliminating silent downgrades).
+- **Subcommand `--help` / `-h` Safety (`args.mjs` & `agy-companion.mjs`):** Added per-subcommand `--help` / `-h` and `help <subcommand>` handling across all 16 subcommands so `--help` is never treated as a task prompt or queued as a job.
+- **File-Aware Empty-Response Summary & Deep Git Snapshot Diff (`formatEmptyTurnMessage`):** Upgraded workspace file tracking to `git status --porcelain -uall` with `(gitCode, mtimeMs, size)` diffing merged with `GetTrajectoryFileDiffs`, reporting exact created/modified files when Antigravity completes a turn without prose text.
+- **Model IDs in Quota HUD & CLI Permission Documentation:** Added concrete `modelId` badges to `/agy:quota` and documented canonical tiers, concrete CLI models, and `--mode=plan` vs `--mode=auto --dangerously-skip-permissions` security boundaries in `README.md`.
+
 ## [1.1.1] - 2026-10-25
 
 ### Fixed

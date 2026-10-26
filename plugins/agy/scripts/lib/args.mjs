@@ -44,8 +44,8 @@ export function normalizeArgv(argv) {
 export function parseArgs(rawArgv, config = {}) {
   const argv = normalizeArgv(rawArgv);
   const valueOptions = new Set(config.valueOptions ?? []);
-  const booleanOptions = new Set(config.booleanOptions ?? []);
-  const aliasMap = config.aliasMap ?? {};
+  const booleanOptions = new Set(["help", ...(config.booleanOptions ?? [])]);
+  const aliasMap = { h: "help", ...(config.aliasMap ?? {}) };
   const options = {};
   const positionals = [];
 

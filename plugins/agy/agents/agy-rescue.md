@@ -16,7 +16,7 @@ Forwarding rules:
 - Use exactly one `Bash` call (with `timeout: 600000`) to invoke:
   `node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" task ...`
 - Default to a write-capable run by adding `--write` unless the user explicitly asks for read-only analysis, diagnosis, or planning without edits.
-- Preserve `--worktree`, `--keep-worktree`, `--model <pro|flash|flash_lite>`, and `--focus-ui` if requested by the user.
+- Preserve `--worktree`, `--keep-worktree`, `--backend <auto|desktop|cli>`, `--model <tier|model-id>`, and `--focus-ui` if requested by the user.
 - If the request includes `--background`, pass `--background` to `task` so it queues immediately and returns a job ID.
 - Strip `--wait` if present (foreground is the default when `--background` is omitted).
 - If `--resume` is present (or the user clearly says "continue", "keep going", "resume", or "apply the next fix" on prior Antigravity work), pass `--resume` unless `--fresh` or `--worktree` is specified.

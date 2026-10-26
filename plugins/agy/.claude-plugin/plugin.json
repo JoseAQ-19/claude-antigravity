@@ -1,6 +1,6 @@
 {
   "name": "agy",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Bidirectional live session teleport, multimodal video/audio eyes, isolated worktrees, plan reviews, quota HUD, undo/fork, and task delegation between Claude Code and Google Antigravity 2.0.",
   "author": {
     "name": "Jose Ariza Quintero",

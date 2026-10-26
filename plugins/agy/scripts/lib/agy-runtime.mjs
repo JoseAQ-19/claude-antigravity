@@ -9,43 +9,187 @@ import { resolveWorkspaceRoot } from "./state.mjs";
 
 const MAX_WINDOWS_SAFE_PROMPT_CHARS = 12000;
 
-const MODEL_TIER_MAP = new Map([
-  ["pro", "pro"],
-  ["gemini-pro", "pro"],
-  ["flash", "flash"],
-  ["gemini-flash", "flash"],
-  ["flash_lite", "flash_lite"],
-  ["flash-lite", "flash_lite"],
-  ["lite", "flash_lite"],
-  ["fast", "flash_lite"]
+export const UNIFIED_MODEL_TIERS = Object.freeze({
+  pro: Object.freeze({
+    tier: "pro",
+    aliases: Object.freeze(["pro", "gemini-pro"]),
+    desktopModel: "pro",
+    cliModel: "gemini-4-argon-high",
+    description: "Flagship deep-reasoning Gemini Pro / Argon tier"
+  }),
+  flash: Object.freeze({
+    tier: "flash",
+    aliases: Object.freeze(["flash", "gemini-flash"]),
+    desktopModel: "flash",
+    cliModel: "gemini-3.8-flash-medium",
+    description: "Balanced fast Gemini Flash tier"
+  }),
+  flash_lite: Object.freeze({
+    tier: "flash_lite",
+    aliases: Object.freeze(["flash_lite", "flash-lite", "lite", "fast"]),
+    desktopModel: "flash_lite",
+    cliModel: "gemini-3.8-flash-low",
+    description: "Lowest-latency lightweight Gemini Flash tier"
+  })
+});
+
+export const SUPPORTED_CLI_MODELS = Object.freeze([
+  "gemini-4-argon-high",
+  "gemini-4-argon-medium",
+  "gemini-4-argon-low",
+  "gemini-3.8-flash-high",
+  "gemini-3.8-flash-medium",
+  "gemini-3.8-flash-low",
+  "claude-opus-5-5-high",
+  "claude-opus-5-5-medium",
+  "claude-opus-5-5-low",
+  "claude-sonnet-5-5-high",
+  "claude-sonnet-5-5-medium",
+  "claude-sonnet-5-5-low",
+  "gpt-oss-120b-medium"
 ]);
 
-export function normalizeDesktopModelTier(requestedModel, defaultTier = "pro") {
-  if (!requestedModel) return defaultTier;
-  const key = String(requestedModel).trim().toLowerCase();
-  if (MODEL_TIER_MAP.has(key)) return MODEL_TIER_MAP.get(key);
-  if (key.includes("lite")) return "flash_lite";
-  if (key.includes("flash")) return "flash";
-  return "pro";
+const TIER_BY_ALIAS = new Map();
+for (const def of Object.values(UNIFIED_MODEL_TIERS)) {
+  for (const alias of def.aliases) {
+    TIER_BY_ALIAS.set(alias, def);
+  }
 }
 
-export function normalizeCliModelArgs(requestedModel) {
-  if (!requestedModel) return [];
+const SUPPORTED_CLI_MODEL_SET = new Set(SUPPORTED_CLI_MODELS.map((m) => m.toLowerCase()));
+const cliModelsProbeCache = new Map();
+
+function probeDynamicCliModels(cliPath) {
+  if (!cliPath || !fs.existsSync(cliPath)) return null;
+  if (cliModelsProbeCache.has(cliPath)) return cliModelsProbeCache.get(cliPath);
+  try {
+    const out = execFileSync(cliPath, ["models"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5000
+    });
+    const ids = new Set();
+    for (const line of String(out ?? "").split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("Fetching")) continue;
+      const id = trimmed.split(/\s+/)[0]?.trim().toLowerCase();
+      if (id && /^[a-z0-9][a-z0-9._-]{2,63}$/.test(id)) {
+        ids.add(id);
+      }
+    }
+    const result = ids.size > 0 ? ids : null;
+    cliModelsProbeCache.set(cliPath, result);
+    return result;
+  } catch {
+    cliModelsProbeCache.set(cliPath, null);
+    return null;
+  }
+}
+
+function createUnsupportedModelError(requestedModel, backend, extraHint = "") {
+  const desktopList = Object.keys(UNIFIED_MODEL_TIERS).join(", ");
+  const cliList = SUPPORTED_CLI_MODELS.join(", ");
+  const suffix = extraHint ? ` ${extraHint}` : "";
+  const err = new Error(
+    `Unsupported --model "${requestedModel}" for backend "${backend}".` +
+      `${suffix} Supported canonical tiers (both backends): ${desktopList}.` +
+      ` Supported concrete CLI models (--backend cli): ${cliList}.`
+  );
+  err.code = "ERR_UNSUPPORTED_MODEL";
+  return err;
+}
+
+export function normalizeBackendChoice(requestedBackend) {
+  if (!requestedBackend) return "auto";
+  const key = String(requestedBackend).trim().toLowerCase();
+  if (key === "auto") return "auto";
+  if (key === "desktop" || key === "desktop-live") return "desktop";
+  if (key === "cli" || key === "cli-headless") return "cli";
+  const err = new Error(`Invalid --backend "${requestedBackend}". Expected one of: auto, desktop, cli.`);
+  err.code = "ERR_INVALID_BACKEND";
+  throw err;
+}
+
+export function normalizeDesktopModelTier(requestedModel, defaultTier = "pro") {
+  if (!requestedModel || !String(requestedModel).trim()) {
+    return UNIFIED_MODEL_TIERS[defaultTier]?.desktopModel || "pro";
+  }
   const raw = String(requestedModel).trim();
-  if (!raw) return [];
   const lower = raw.toLowerCase();
-  // Desktop tier aliases ("pro", "flash", "flash_lite") are not model IDs in `agy` CLI:
-  // omit `--model` for "pro" (uses user's configured default model) and map fast tiers to `--effort`.
-  if (lower === "pro" || lower === "gemini-pro") {
-    return [];
+  const tierDef = TIER_BY_ALIAS.get(lower);
+  if (tierDef) return tierDef.desktopModel;
+
+  if (SUPPORTED_CLI_MODEL_SET.has(lower)) {
+    throw createUnsupportedModelError(
+      raw,
+      "desktop-live",
+      `"${raw}" is a concrete agy CLI model ID; Antigravity Desktop agentapi only accepts canonical tiers (pro, flash, flash_lite). Pass --backend cli to run "${raw}" via agy CLI.`
+    );
   }
-  if (lower === "flash" || lower === "gemini-flash") {
-    return ["--effort", "medium"];
+  throw createUnsupportedModelError(raw, "desktop-live");
+}
+
+function selectCliTierModel(tierDef, dynamicSet) {
+  if (!dynamicSet || dynamicSet.has(tierDef.cliModel)) {
+    return tierDef.cliModel;
   }
-  if (lower === "flash_lite" || lower === "flash-lite" || lower === "lite" || lower === "fast") {
-    return ["--effort", "low"];
+  const candidates = [...dynamicSet];
+  if (tierDef.tier === "pro") {
+    return (
+      candidates.find((m) => m.startsWith("gemini-") && (m.includes("pro") || m.includes("argon")) && m.endsWith("-high")) ||
+      candidates.find((m) => m.startsWith("gemini-") && (m.includes("pro") || m.includes("argon"))) ||
+      tierDef.cliModel
+    );
   }
-  return ["--model", raw];
+  if (tierDef.tier === "flash") {
+    return (
+      candidates.find((m) => m.startsWith("gemini-") && m.includes("flash") && m.endsWith("-medium")) ||
+      candidates.find((m) => m.startsWith("gemini-") && m.includes("flash")) ||
+      tierDef.cliModel
+    );
+  }
+  return (
+    candidates.find((m) => m.startsWith("gemini-") && m.includes("flash") && (m.endsWith("-low") || m.includes("lite"))) ||
+    tierDef.cliModel
+  );
+}
+
+export function normalizeCliModelArgs(requestedModel, options = {}) {
+  const defaultTier = UNIFIED_MODEL_TIERS.pro;
+  if (!requestedModel || !String(requestedModel).trim()) {
+    const dynamicSet = options.availableCliModels ?? null;
+    return ["--model", selectCliTierModel(defaultTier, dynamicSet)];
+  }
+
+  const raw = String(requestedModel).trim();
+  const lower = raw.toLowerCase();
+  const tierDef = TIER_BY_ALIAS.get(lower);
+  if (tierDef) {
+    const dynamicSet = options.availableCliModels ?? null;
+    return ["--model", selectCliTierModel(tierDef, dynamicSet)];
+  }
+
+  if (SUPPORTED_CLI_MODEL_SET.has(lower)) {
+    return ["--model", lower];
+  }
+
+  const dynamicSet =
+    options.availableCliModels ?? (options.cliPath ? probeDynamicCliModels(options.cliPath) : null);
+  if (dynamicSet && dynamicSet.has(lower)) {
+    return ["--model", lower];
+  }
+
+  throw createUnsupportedModelError(raw, "cli-headless");
+}
+
+export function validateModelForBackend(requestedModel, backend, options = {}) {
+  const target = backend === "desktop" || backend === "desktop-live" ? "desktop-live" : "cli-headless";
+  if (target === "desktop-live") {
+    const resolved = normalizeDesktopModelTier(requestedModel, options.defaultTier || "pro");
+    return { backend: "desktop-live", resolvedModel: resolved, args: [`--model=${resolved}`] };
+  }
+  const cliArgs = normalizeCliModelArgs(requestedModel, options);
+  return { backend: "cli-headless", resolvedModel: cliArgs[1] || null, args: cliArgs };
 }
 
 export function normalizeUriPathForCompare(uriOrPath, platform = process.platform) {
@@ -206,27 +350,57 @@ function invokeAgentApi(conn, args, projectId = null) {
   return parsed;
 }
 
-function snapshotGitStatusPaths(workspaceRoot) {
+function unquoteGitPorcelainPath(rawRel) {
+  let rel = String(rawRel ?? "").trim();
+  const arrowIdx = rel.indexOf(" -> ");
+  if (arrowIdx !== -1) rel = rel.slice(arrowIdx + 4).trim();
+  if (rel.startsWith('"') && rel.endsWith('"')) {
+    rel = rel.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  return rel;
+}
+
+function snapshotWorkspaceFiles(workspaceRoot) {
   try {
-    const res = spawnSync("git", ["status", "--porcelain"], {
+    const res = spawnSync("git", ["status", "--porcelain", "-uall"], {
       cwd: workspaceRoot,
       encoding: "utf8",
       windowsHide: true,
-      timeout: 4000
+      timeout: 5000
     });
     if (res.status !== 0) return null;
-    const set = new Set();
+    const map = new Map();
     for (const line of String(res.stdout ?? "").split(/\r?\n/)) {
       if (line.length < 4) continue;
-      const rel = line.slice(3).trim().replace(/^"(.*)"$/, "$1");
-      if (rel && !rel.includes(".claude/agy-handoffs")) {
-        set.add(path.resolve(workspaceRoot, rel));
-      }
+      const gitCode = line.slice(0, 2);
+      const rel = unquoteGitPorcelainPath(line.slice(3));
+      if (!rel || rel.replace(/\\/g, "/").includes(".claude/agy-handoffs")) continue;
+      const abs = path.resolve(workspaceRoot, rel);
+      let mtimeMs = 0;
+      let size = -1;
+      try {
+        const st = fs.statSync(abs);
+        mtimeMs = st.mtimeMs;
+        size = st.size;
+      } catch {}
+      map.set(abs, { gitCode, mtimeMs, size });
     }
-    return set;
+    return map;
   } catch {
     return null;
   }
+}
+
+function diffWorkspaceSnapshots(preSnap, postSnap) {
+  if (!preSnap || !postSnap) return [];
+  const changed = [];
+  for (const [abs, curr] of postSnap.entries()) {
+    const prev = preSnap.get(abs);
+    if (!prev || prev.gitCode !== curr.gitCode || prev.mtimeMs !== curr.mtimeMs || prev.size !== curr.size) {
+      changed.push(abs);
+    }
+  }
+  return changed;
 }
 
 function isRpcMethodUnsupportedError(err) {
@@ -237,20 +411,48 @@ function isRpcMethodUnsupportedError(err) {
 }
 
 function isStepTerminal(status) {
-  const s = String(status ?? "");
+  const s = String(status ?? "").toUpperCase();
   return s.includes("DONE") || s.includes("ERROR") || s.includes("CANCELED") || s.includes("CANCELLED") || s.includes("FAILED");
+}
+
+export function isTrajectoryRunning(trajStatus) {
+  const s = String(trajStatus ?? "").toUpperCase();
+  if (!s) return false;
+  return (
+    s.includes("RUNNING") ||
+    s.includes("QUEUED") ||
+    s.includes("STARTING") ||
+    s.includes("PENDING") ||
+    s.includes("IN_PROGRESS")
+  );
+}
+
+export function isTrajectoryError(trajStatus) {
+  const s = String(trajStatus ?? "").toUpperCase();
+  return s.includes("ERROR") || s.includes("FAILED");
+}
+
+export function isTrajectoryCanceled(trajStatus) {
+  const s = String(trajStatus ?? "").toUpperCase();
+  return s.includes("CANCELED") || s.includes("CANCELLED") || s.includes("ABORTED");
 }
 
 export function extractTurnDataFromSteps(steps, startIndex = 0) {
   const slice = Array.isArray(steps) ? steps.slice(startIndex) : [];
   let finalMessage = "";
+  let notifyMessage = "";
   const reasoningSummary = [];
   let hasActiveSteps = false;
   let hasPlannerResponse = false;
+  let hasErrorStep = false;
 
   for (const step of slice) {
-    if (!isStepTerminal(step.status)) {
+    const statusStr = String(step.status ?? "").toUpperCase();
+    if (!isStepTerminal(statusStr)) {
       hasActiveSteps = true;
+    }
+    if (statusStr.includes("ERROR") || statusStr.includes("FAILED")) {
+      hasErrorStep = true;
     }
     const pr = step.plannerResponse;
     if (pr && typeof pr === "object") {
@@ -268,15 +470,57 @@ export function extractTurnDataFromSteps(steps, startIndex = 0) {
         }
       }
     }
+    const nu = step.notifyUser;
+    if (nu && typeof nu === "object") {
+      const nMsg = String(nu.message || nu.notificationContent || nu.text || "").trim();
+      if (nMsg) notifyMessage = nMsg;
+    }
   }
 
   return {
     stepCount: slice.length,
     hasActiveSteps,
     hasPlannerResponse,
-    finalMessage,
+    hasErrorStep,
+    finalMessage: finalMessage || notifyMessage,
     reasoningSummary: reasoningSummary.slice(-6)
   };
+}
+
+export function formatEmptyTurnMessage({
+  workspaceRoot,
+  backend,
+  conversationId,
+  touchedFiles = [],
+  stepCount = 0,
+  timedOut = false
+}) {
+  const relFiles = touchedFiles.map((f) => {
+    const rel = workspaceRoot ? path.relative(workspaceRoot, f) : f;
+    return (rel && !rel.startsWith("..") ? rel : f).replace(/\\/g, "/");
+  });
+  const filesList = relFiles.map((f) => `\`${f}\``).join(", ");
+  const convRef = conversationId ? `\`${conversationId}\`` : "the session";
+
+  if (timedOut) {
+    return relFiles.length > 0
+      ? `Antigravity turn timed out after ${stepCount} step(s) on ${convRef}; partial file changes detected (${relFiles.length}): ${filesList}.`
+      : `Antigravity turn timed out after ${stepCount} step(s) on ${convRef} with no repository file changes detected.`;
+  }
+
+  if (relFiles.length > 0) {
+    return `Completed without textual response; created/modified ${relFiles.length} file(s): ${filesList}.`;
+  }
+
+  const whereHint =
+    backend === "desktop-live"
+      ? `inspect conversation ${convRef} in Antigravity Desktop`
+      : `resume with \`agy --conversation ${conversationId || "<id>"}\``;
+
+  if (stepCount > 0) {
+    return `Completed without textual response (${stepCount} step(s) executed; no repository file changes detected — ${whereHint}).`;
+  }
+  return `No textual response or repository file changes were produced (${whereHint}).`;
 }
 
 function sleep(ms) {
@@ -286,10 +530,10 @@ function sleep(ms) {
 export async function runDesktopTurn(conn, cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const callAgentApi = options.invokeAgentApiFn ?? invokeAgentApi;
-  const preGitPaths = snapshotGitStatusPaths(workspaceRoot);
+  const preSnap = snapshotWorkspaceFiles(workspaceRoot);
+  const modelTier = normalizeDesktopModelTier(options.model, options.defaultModelTier || "pro");
   const projectId = await ensureDesktopProjectId(conn, workspaceRoot);
   const safePrompt = spillLargePromptIfNeeded(workspaceRoot, options.prompt, options.kind || "task");
-  const modelTier = normalizeDesktopModelTier(options.model, options.defaultModelTier || "pro");
 
   let conversationId = options.resumeConversationId || null;
   let initialStepCount = 0;
@@ -332,11 +576,13 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
 
   // 1. Wait briefly until the new user turn registers in GetCascadeTrajectory
   let steps = [];
+  let lastTrajStatus = null;
   if (!trajectoryRpcUnsupported) {
     for (let i = 0; i < 25 && Date.now() < deadline; i += 1) {
       try {
         const traj = await connectRpcPost(conn.address, "GetCascadeTrajectory", { cascadeId: conversationId }, conn.csrfToken, 5000);
         steps = traj?.trajectory?.steps ?? [];
+        lastTrajStatus = traj?.status || traj?.trajectory?.status || null;
         if (steps.length > initialStepCount) break;
       } catch (err) {
         if (isRpcMethodUnsupportedError(err)) {
@@ -367,9 +613,12 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
     };
   }
 
-  // 3. Wait for conversation idle + terminal planner response
+  // 3. Wait for conversation idle + terminal trajectory status (never break while CASCADE_RUN_STATUS_RUNNING!)
   let lastLoggedStepCount = initialStepCount;
   let extracted = extractTurnDataFromSteps(steps, initialStepCount);
+  let unchangedStepPolls = 0;
+  const idleWaitSec = Math.max(1, Math.min(15, Math.ceil((options.idleSliceMs ?? 15000) / 1000)));
+  const idleRpcTimeoutMs = (idleWaitSec + 5) * 1000;
 
   while (Date.now() < deadline) {
     try {
@@ -378,30 +627,50 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
         "WaitForConversationFullyIdle",
         {
           conversationId,
-          inactivityTimeoutSeconds: 45,
+          inactivityTimeoutSeconds: idleWaitSec,
           returnOnExecutorError: true
         },
         conn.csrfToken,
-        55000
+        idleRpcTimeoutMs
       );
     } catch {
-      await sleep(Math.min(1500, pollIntervalMs * 2));
+      await sleep(Math.min(1000, pollIntervalMs * 2));
     }
 
     try {
       const traj = await connectRpcPost(conn.address, "GetCascadeTrajectory", { cascadeId: conversationId }, conn.csrfToken, 8000);
+      const prevLen = steps.length;
       steps = traj?.trajectory?.steps ?? [];
+      lastTrajStatus = traj?.status || traj?.trajectory?.status || lastTrajStatus;
+
       if (steps.length > lastLoggedStepCount) {
         lastLoggedStepCount = steps.length;
+        unchangedStepPolls = 0;
         options.onProgress?.({
           phase: "running",
           conversationId,
-          message: `Antigravity trajectory progressed to ${steps.length} step(s).`
+          message: `Antigravity trajectory progressed to ${steps.length} step(s) (status=${lastTrajStatus || "unknown"}).`
         });
+      } else if (steps.length === prevLen) {
+        unchangedStepPolls += 1;
       }
+
       extracted = extractTurnDataFromSteps(steps, initialStepCount);
-      if (extracted.stepCount > 0 && !extracted.hasActiveSteps && (extracted.hasPlannerResponse || steps.length > initialStepCount + 1)) {
-        break;
+
+      if (lastTrajStatus) {
+        // Authoritative trajectory status from Antigravity Hub: keep waiting while RUNNING/QUEUED/PENDING
+        if (!isTrajectoryRunning(lastTrajStatus) && !extracted.hasActiveSteps && extracted.stepCount > 0) {
+          break;
+        }
+      } else {
+        // Minimal mock server without top-level `status`
+        if (
+          extracted.stepCount > 0 &&
+          !extracted.hasActiveSteps &&
+          (extracted.hasPlannerResponse || unchangedStepPolls >= 2)
+        ) {
+          break;
+        }
       }
     } catch (err) {
       if (isRpcMethodUnsupportedError(err)) {
@@ -412,36 +681,65 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
     await sleep(Math.min(1000, pollIntervalMs * 2));
   }
 
-  // 4. Collect touched files from GetTrajectoryFileDiffs (with git status fallback)
-  let touchedFiles = [];
+  const timedOut =
+    Date.now() >= deadline &&
+    (isTrajectoryRunning(lastTrajStatus) || extracted.hasActiveSteps || extracted.stepCount === 0);
+
+  // 4. Collect touched files by merging GetTrajectoryFileDiffs + workspace git snapshot diff
+  const touchedSet = new Set();
+  const normWs = normalizeUriPathForCompare(workspaceRoot);
   try {
     const diffRes = await connectRpcPost(conn.address, "GetTrajectoryFileDiffs", { conversationId }, conn.csrfToken, 6000);
     const diffs = Array.isArray(diffRes?.diffs) ? diffRes.diffs : [];
-    const normWs = normalizeUriPathForCompare(workspaceRoot);
-    touchedFiles = diffs
-      .map((d) => (d?.uri ? fileUriToLocalPath(d.uri) : null))
-      .filter(Boolean)
-      .filter((p) => {
-        const np = normalizeUriPathForCompare(p);
-        return np.startsWith(normWs) && !np.includes("/.claude/agy-handoffs/");
-      });
+    for (const d of diffs) {
+      const localPath = d?.uri ? fileUriToLocalPath(d.uri) : null;
+      if (!localPath) continue;
+      const np = normalizeUriPathForCompare(localPath);
+      if (np.startsWith(normWs) && !np.includes("/.claude/agy-handoffs/")) {
+        touchedSet.add(path.resolve(localPath));
+      }
+    }
   } catch {}
 
-  if (touchedFiles.length === 0 && preGitPaths) {
-    const postGitPaths = snapshotGitStatusPaths(workspaceRoot);
-    if (postGitPaths) {
-      touchedFiles = [...postGitPaths].filter((p) => !preGitPaths.has(p));
+  if (preSnap) {
+    const postSnap = snapshotWorkspaceFiles(workspaceRoot);
+    for (const changedPath of diffWorkspaceSnapshots(preSnap, postSnap)) {
+      touchedSet.add(changedPath);
     }
   }
+  const touchedFiles = [...touchedSet];
+
+  let exitStatus = 0;
+  if (timedOut) {
+    exitStatus = 124;
+  } else if (isTrajectoryCanceled(lastTrajStatus)) {
+    exitStatus = 130;
+  } else if (isTrajectoryError(lastTrajStatus)) {
+    exitStatus = 1;
+  } else if (extracted.stepCount === 0) {
+    exitStatus = 1;
+  }
+
+  const finalMessage =
+    extracted.finalMessage ||
+    formatEmptyTurnMessage({
+      workspaceRoot,
+      backend: "desktop-live",
+      conversationId,
+      touchedFiles,
+      stepCount: extracted.stepCount,
+      timedOut
+    });
 
   return {
-    exitStatus: extracted.finalMessage ? 0 : 1,
+    exitStatus,
     backend: "desktop-live",
     conversationId,
     projectId,
-    finalMessage: extracted.finalMessage || "(Antigravity completed without a textual response — check the conversation in Antigravity Desktop.)",
+    trajectoryStatus: lastTrajStatus,
+    finalMessage,
     reasoningSummary: extracted.reasoningSummary,
-    touchedFiles: [...new Set(touchedFiles)]
+    touchedFiles
   };
 }
 
@@ -456,7 +754,7 @@ export function buildCliTurnArgs(workspaceRoot, options = {}) {
   } else {
     args.push("--mode=plan");
   }
-  args.push(...normalizeCliModelArgs(options.model));
+  args.push(...normalizeCliModelArgs(options.model, { cliPath: options.cliPath, availableCliModels: options.availableCliModels }));
   // Attach prompt directly to `--print=...` at the end so `agy` never consumes another flag as the prompt.
   args.push(`--print=${safePrompt}`);
   return args;
@@ -515,14 +813,15 @@ export function extractCliStreamEvent(ev) {
 
 export async function runCliTurn(cliInfo, cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
-  const preGitPaths = snapshotGitStatusPaths(workspaceRoot);
-  const args = buildCliTurnArgs(workspaceRoot, options);
+  const preSnap = snapshotWorkspaceFiles(workspaceRoot);
 
   let resolvedCliPath = cliInfo.path;
   if (process.platform === "win32" && resolvedCliPath.toLowerCase().endsWith(".cmd")) {
     const siblingExe = resolvedCliPath.slice(0, -4) + ".exe";
     if (fs.existsSync(siblingExe)) resolvedCliPath = siblingExe;
   }
+
+  const args = buildCliTurnArgs(workspaceRoot, { ...options, cliPath: resolvedCliPath });
 
   const isCmd = process.platform === "win32" && resolvedCliPath.toLowerCase().endsWith(".cmd");
   const safeCmdArgs = isCmd ? args.map((a) => String(a).replace(/\r?\n/g, " ")) : args;
@@ -545,6 +844,7 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
     let streamedText = "";
     let explicitResultText = null;
     let explicitError = null;
+    let stepEventsCount = 0;
     const nonJsonLines = [];
     const reasoningSummary = [];
 
@@ -562,6 +862,7 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
       }
       try {
         const ev = JSON.parse(trimmed);
+        stepEventsCount += 1;
         const parsed = extractCliStreamEvent(ev);
         if (parsed.conversationId && !conversationId) {
           conversationId = parsed.conversationId;
@@ -602,11 +903,9 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
       if (stdoutBuf.trim()) processLine(stdoutBuf);
 
       let touchedFiles = [];
-      if (preGitPaths) {
-        const postGitPaths = snapshotGitStatusPaths(workspaceRoot);
-        if (postGitPaths) {
-          touchedFiles = [...postGitPaths].filter((p) => !preGitPaths.has(p));
-        }
+      if (preSnap) {
+        const postSnap = snapshotWorkspaceFiles(workspaceRoot);
+        touchedFiles = diffWorkspaceSnapshots(preSnap, postSnap);
       }
 
       const rawExit = timedOut ? 124 : code ?? 0;
@@ -619,7 +918,17 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
       const finalMessage =
         assembledText ||
         explicitError ||
-        (timedOut ? `agy CLI timed out after ${Math.round(timeoutMs / 1000)}s.` : stderrBuf.trim());
+        (timedOut
+          ? `agy CLI timed out after ${Math.round(timeoutMs / 1000)}s.`
+          : stderrBuf.trim() ||
+            formatEmptyTurnMessage({
+              workspaceRoot,
+              backend: "cli-headless",
+              conversationId,
+              touchedFiles,
+              stepCount: stepEventsCount,
+              timedOut: false
+            }));
 
       resolve({
         exitStatus,
@@ -635,8 +944,10 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
   });
 }
 
-export async function runDualAntigravityTurn(cwd, options = {}) {
-  const status = await getAntigravityStatus(cwd, options.discoveryOptions);
+export async function resolveExecutionBackendAndValidateModel(cwd, options = {}) {
+  const backendChoice = normalizeBackendChoice(options.backend);
+  const status = options.statusSnapshot ?? (await getAntigravityStatus(cwd, options.discoveryOptions));
+
   if (!status.ready) {
     const installHint = status.cli.installUrl || status.cli.installCommand || "https://antigravity.google/download";
     throw new Error(
@@ -644,8 +955,43 @@ export async function runDualAntigravityTurn(cwd, options = {}) {
     );
   }
 
-  const preferCli = options.backend === "cli";
-  if (!preferCli && status.desktop.available) {
+  let selectedBackend;
+  if (backendChoice === "desktop") {
+    if (!status.desktop.available) {
+      throw new Error(
+        "Antigravity 2.0 Desktop is not running (--backend desktop was requested). Open Antigravity Desktop or pass --backend cli."
+      );
+    }
+    selectedBackend = "desktop-live";
+  } else if (backendChoice === "cli") {
+    if (!status.cli.available) {
+      const installHint = status.cli.installUrl || "https://antigravity.google/download";
+      throw new Error(
+        `'agy' CLI is not installed (--backend cli was requested). Install from ${installHint} or omit --backend cli to use Antigravity Desktop.`
+      );
+    }
+    selectedBackend = "cli-headless";
+  } else {
+    selectedBackend = status.desktop.available ? "desktop-live" : "cli-headless";
+  }
+
+  const validation = validateModelForBackend(options.model, selectedBackend, {
+    defaultTier: options.defaultModelTier || "pro",
+    cliPath: status.cli?.path || null
+  });
+
+  return {
+    status,
+    backendChoice,
+    selectedBackend,
+    resolvedModel: validation.resolvedModel
+  };
+}
+
+export async function runDualAntigravityTurn(cwd, options = {}) {
+  const { status, backendChoice, selectedBackend } = await resolveExecutionBackendAndValidateModel(cwd, options);
+
+  if (selectedBackend === "desktop-live") {
     let startedDesktopConversation = false;
     try {
       return await runDesktopTurn(status.desktop, cwd, {
@@ -656,7 +1002,10 @@ export async function runDualAntigravityTurn(cwd, options = {}) {
         }
       });
     } catch (err) {
-      if (!startedDesktopConversation && status.cli.available) {
+      if (err?.code === "ERR_UNSUPPORTED_MODEL" || err?.code === "ERR_INVALID_BACKEND") {
+        throw err;
+      }
+      if (backendChoice === "auto" && !startedDesktopConversation && status.cli.available) {
         options.onProgress?.({
           phase: "fallback",
           message: `Desktop dispatch failed (${err.message}); falling back automatically to agy CLI.`
@@ -666,10 +1015,8 @@ export async function runDualAntigravityTurn(cwd, options = {}) {
       throw err;
     }
   }
-  if (status.cli.available) {
-    return runCliTurn(status.cli, cwd, options);
-  }
-  return runDesktopTurn(status.desktop, cwd, options);
+
+  return runCliTurn(status.cli, cwd, options);
 }
 
 export function terminateProcessTree(pid) {

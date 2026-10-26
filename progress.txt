@@ -1,5 +1,5 @@
-# Project Progress — `claude-antigravity` (`v1.1.1`)
-Last Updated: 2026-10-25
+# Project Progress — `claude-antigravity` (`v1.1.2`)
+Last Updated: 2026-10-26
 
 ## Completed Tasks
 - [x] Fase 0.1–0.5: Investigación completa de `openai/codex-plugin-cc` y auditoría empírica de Antigravity 2.0 (`language_server` + `agentapi` + `agy` CLI).
@@ -21,3 +21,4 @@ Last Updated: 2026-10-25
 - [x] RF-14 (Rebrand `claude-antigravity` `v1.1.0` & Flagship Docs): Adoptado nombre ganador `JoseAQ-19/claude-antigravity` (`agy@claude-antigravity`), actualizados los 16 comandos `/agy:*`, `skills/claude-antigravity/SKILL.md`, `README.md` insignia (EN + ES), `CHANGELOG.md`, `scripts/verify-release.mjs` y `tests/test_release_readiness.mjs` (22/22 tests unitarios + 1/1 E2E live en verde).
 - [x] Fase 4.0 (Publicación Open Source & Envío Oficial al Directorio de Anthropic): Empaquetados `README.md`, `LICENSE`, `NOTICE`, `CHANGELOG.md` e `icon.png` (`1024x1024`) dentro de `plugins/agy/`, publicado `JoseAQ-19/claude-antigravity` (`v1.1.0`, CI 6/6 en verde), enviado al Directorio Oficial de Claude Desktop y configurado el webhook oficial de GitHub (`id: 702737232`, `status_code: 200 OK`).
 - [x] Fase 4.1 (Auditoría Profunda & Hotfix `v1.1.1`): Corregidos los 9 fallos reales detectados en producción (`--print=<prompt>` al final en `agy` CLI v1.4+, mapeo de modelos/effort en CLI, parser `stream-json` v1.4+, `gitFolder.folderUri` + UUID `CreateProject` en `ensureDesktopProjectId`, descubrimiento Windows 10x más rápido con `netstat -ano`, renderizado seguro sin `null` en fallos, y deduplicación/compactación de `touchedFiles` en sesiones de +1.000 turnos) + nuevos tests de regresión.
+- [x] Fase 4.2 (Resolución Integral de `REPORTE-MEJORAS.md` — `v1.1.2`): Corregida salida prematura del bucle mientras `CASCADE_RUN_STATUS_RUNNING` sigue activo y falso estado `failed` en tareas sin respuesta textual (`exitStatus=0` + registro en `.log`), implementado mapa único `UNIFIED_MODEL_TIERS` + validación estricta por backend (`--backend <auto|desktop|cli>`), soporte `--help`/`-h` en todos los subcomandos sin lanzar jobs, detección profunda `git status --porcelain -uall` (`mtimeMs`/`size`) con resumen de archivos tocados (`formatEmptyTurnMessage`), documentación completa de modelos y permisos CLI en `README.md`, y suite ampliada de tests de regresión.

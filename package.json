@@ -1,6 +1,6 @@
 {
   "name": "claude-antigravity",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Bidirectional live IDE bridge, multimodal video/audio eyes, parallel git worktrees, and cross-model reviews between Claude Code and Google Antigravity 2.0 Desktop + agy CLI.",
   "license": "Apache-2.0",
   "author": "Jose Ariza Quintero (@JoseAQ-19)",

@@ -10,11 +10,15 @@ import {
   ensureDesktopProjectId,
   extractCliStreamEvent,
   extractTurnDataFromSteps,
+  formatEmptyTurnMessage,
+  isTrajectoryRunning,
   normalizeCliModelArgs,
   normalizeDesktopModelTier,
   normalizeUriPathForCompare,
   runCliTurn,
-  runDesktopTurn
+  runDesktopTurn,
+  UNIFIED_MODEL_TIERS,
+  validateModelForBackend
 } from "../plugins/agy/scripts/lib/agy-runtime.mjs";
 import { renderTransferResult } from "../plugins/agy/scripts/lib/render.mjs";
 
@@ -33,10 +37,29 @@ test("normalizeUriPathForCompare normalizes encoded URIs, Windows paths, and mac
   );
 });
 
-test("normalizeDesktopModelTier maps aliases accurately", () => {
+test("normalizeDesktopModelTier and validateModelForBackend enforce strict per-backend model validation", () => {
   assert.equal(normalizeDesktopModelTier("flash"), "flash");
   assert.equal(normalizeDesktopModelTier("lite"), "flash_lite");
   assert.equal(normalizeDesktopModelTier(null, "pro"), "pro");
+
+  // Concrete CLI models MUST be rejected on desktop-live with actionable guidance (never silently mapped to pro!)
+  assert.throws(
+    () => normalizeDesktopModelTier("gemini-4-argon-high"),
+    (err) => err.code === "ERR_UNSUPPORTED_MODEL" && /--backend cli/.test(err.message)
+  );
+  assert.throws(
+    () => validateModelForBackend("nonexistent-model-xyz", "desktop-live"),
+    (err) => err.code === "ERR_UNSUPPORTED_MODEL"
+  );
+  assert.throws(
+    () => validateModelForBackend("nonexistent-model-xyz", "cli-headless"),
+    (err) => err.code === "ERR_UNSUPPORTED_MODEL"
+  );
+
+  // Unified canonical tier map produces deterministic equivalents across both backends
+  assert.equal(UNIFIED_MODEL_TIERS.pro.cliModel, "gemini-4-argon-high");
+  assert.equal(UNIFIED_MODEL_TIERS.flash.cliModel, "gemini-3.8-flash-medium");
+  assert.equal(UNIFIED_MODEL_TIERS.flash_lite.cliModel, "gemini-3.8-flash-low");
 });
 
 test("extractTurnDataFromSteps extracts final response and detects active steps", () => {
@@ -241,11 +264,12 @@ test("ensureDesktopProjectId matches gitFolder.folderUri and creates new project
 test("buildCliTurnArgs, normalizeCliModelArgs, runCliTurn, and renderTransferResult handle agy v1.4+ flags and stream-json", async () => {
   const tmpWs = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cli-turn-"));
   try {
-    // 1. Verify `--print=...` is attached LAST and `--model pro` is never sent to `agy` CLI
-    assert.deepEqual(normalizeCliModelArgs("pro"), []);
-    assert.deepEqual(normalizeCliModelArgs("flash"), ["--effort", "medium"]);
-    assert.deepEqual(normalizeCliModelArgs("flash_lite"), ["--effort", "low"]);
+    // 1. Verify `--print=...` is attached LAST and unified tiers map to concrete CLI models (never `--model pro`)
+    assert.deepEqual(normalizeCliModelArgs("pro"), ["--model", "gemini-4-argon-high"]);
+    assert.deepEqual(normalizeCliModelArgs("flash"), ["--model", "gemini-3.8-flash-medium"]);
+    assert.deepEqual(normalizeCliModelArgs("flash_lite"), ["--model", "gemini-3.8-flash-low"]);
     assert.deepEqual(normalizeCliModelArgs("gemini-4-argon-high"), ["--model", "gemini-4-argon-high"]);
+    assert.deepEqual(normalizeCliModelArgs("claude-opus-5-5-high"), ["--model", "claude-opus-5-5-high"]);
 
     const cliArgs = buildCliTurnArgs(tmpWs, {
       prompt: "Execute next step",
@@ -255,7 +279,8 @@ test("buildCliTurnArgs, normalizeCliModelArgs, runCliTurn, and renderTransferRes
     });
     assert.equal(cliArgs[0], "--output-format");
     assert.equal(cliArgs[1], "stream-json");
-    assert.equal(cliArgs.includes("--model"), false);
+    assert.equal(cliArgs.includes("pro"), false);
+    assert.ok(cliArgs.includes("gemini-4-argon-high"));
     assert.equal(cliArgs[cliArgs.length - 1], "--print=Execute next step");
 
     // 2. Verify real `agy` v1.4.7 NDJSON stream-json event extraction
@@ -327,6 +352,118 @@ test("buildCliTurnArgs, normalizeCliModelArgs, runCliTurn, and renderTransferRes
     assert.equal(failedRendered.includes("agy --conversation null"), false);
     assert.equal(failedRendered.includes("/agy:pull null"), false);
   } finally {
+    fs.rmSync(tmpWs, { recursive: true, force: true });
+  }
+});
+
+test("runDesktopTurn keeps waiting while CASCADE_RUN_STATUS_RUNNING and marks file-only turns exitStatus=0 with file summary", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const tmpWs = fs.mkdtempSync(path.join(os.tmpdir(), "agy-running-idle-"));
+  spawnSync("git", ["init"], { cwd: tmpWs, windowsHide: true });
+
+  let trajectoryPollCount = 0;
+  const targetDoc = path.join(tmpWs, "docs", "contenido", "disponibilidad.md");
+
+  const server = http.createServer((req, res) => {
+    const method = req.url?.split("/").pop();
+    res.setHeader("Content-Type", "application/json");
+    if (method === "ListProjects") {
+      res.end(JSON.stringify({ projectIds: ["default-cli-project"] }));
+      return;
+    }
+    if (method === "ReadProjects") {
+      res.end(JSON.stringify({ projects: [] }));
+      return;
+    }
+    if (method === "CreateProject" || method === "WaitForConversationFullyIdle") {
+      res.end(JSON.stringify({}));
+      return;
+    }
+    if (method === "GetTrajectoryFileDiffs") {
+      res.end(JSON.stringify({ diffs: [] }));
+      return;
+    }
+    if (method === "GetCascadeTrajectory") {
+      trajectoryPollCount += 1;
+      // Poll 1-2: Simulates Reels job at step 31 — all existing tool steps DONE, but trajectory still RUNNING!
+      if (trajectoryPollCount <= 2) {
+        res.end(
+          JSON.stringify({
+            status: "CASCADE_RUN_STATUS_RUNNING",
+            trajectory: {
+              steps: [
+                { type: "CORTEX_STEP_TYPE_USER_INPUT", status: "CORTEX_STEP_STATUS_DONE" },
+                {
+                  type: "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                  status: "CORTEX_STEP_STATUS_DONE",
+                  plannerResponse: { thinking: "Checking public handles", toolCalls: [{ id: "1", name: "run_command" }] }
+                },
+                { type: "CORTEX_STEP_TYPE_RUN_COMMAND", status: "CORTEX_STEP_STATUS_DONE" }
+              ]
+            }
+          })
+        );
+        return;
+      }
+      // Poll 3+: Agent writes the file in a nested untracked folder and finishes IDLE without prose text
+      fs.mkdirSync(path.dirname(targetDoc), { recursive: true });
+      fs.writeFileSync(targetDoc, "# Informe final\nTodo comprobado.\n", "utf8");
+      res.end(
+        JSON.stringify({
+          status: "CASCADE_RUN_STATUS_IDLE",
+          trajectory: {
+            steps: [
+              { type: "CORTEX_STEP_TYPE_USER_INPUT", status: "CORTEX_STEP_STATUS_DONE" },
+              {
+                type: "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                status: "CORTEX_STEP_STATUS_DONE",
+                plannerResponse: { thinking: "Writing final report", toolCalls: [{ id: "2", name: "write_file" }] }
+              },
+              { type: "CORTEX_STEP_TYPE_CODE_ACTION", status: "CORTEX_STEP_STATUS_DONE" }
+            ]
+          }
+        })
+      );
+      return;
+    }
+    res.writeHead(404);
+    res.end("{}");
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const conn = { address: `127.0.0.1:${port}`, csrfToken: "tok" };
+
+  try {
+    assert.equal(isTrajectoryRunning("CASCADE_RUN_STATUS_RUNNING"), true);
+    assert.equal(isTrajectoryRunning("CASCADE_RUN_STATUS_IDLE"), false);
+
+    const res = await runDesktopTurn(conn, tmpWs, {
+      prompt: "Write docs/contenido/disponibilidad.md only",
+      pollIntervalMs: 10,
+      idleSliceMs: 1000,
+      invokeAgentApiFn: () => ({ response: { newConversation: { conversationId: "conv-reels-sim" } } })
+    });
+
+    assert.ok(trajectoryPollCount >= 3, "Must NOT exit loop while status is CASCADE_RUN_STATUS_RUNNING");
+    assert.equal(res.exitStatus, 0, "Completed IDLE turn without exception must return exitStatus 0");
+    assert.ok(
+      res.touchedFiles.some((f) => f.endsWith("disponibilidad.md")),
+      "Untracked nested file written during turn must be detected via git -uall snapshot"
+    );
+    assert.match(res.finalMessage, /Completed without textual response; created\/modified 1 file\(s\): `docs\/contenido\/disponibilidad\.md`/);
+
+    const noFileMsg = formatEmptyTurnMessage({
+      workspaceRoot: tmpWs,
+      backend: "desktop-live",
+      conversationId: "conv-empty",
+      touchedFiles: [],
+      stepCount: 4,
+      timedOut: false
+    });
+    assert.match(noFileMsg, /no repository file changes detected/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
     fs.rmSync(tmpWs, { recursive: true, force: true });
   }
 });

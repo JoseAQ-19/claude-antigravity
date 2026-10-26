@@ -24,3 +24,17 @@ test("parseArgs handles empty $ARGUMENTS string", () => {
   assert.deepEqual(parsed.options, {});
   assert.deepEqual(parsed.positionals, []);
 });
+
+test("parseArgs always captures --help and -h without leaking them into positionals", () => {
+  const direct = parseArgs(["--help"]);
+  assert.equal(direct.options.help, true);
+  assert.deepEqual(direct.positionals, []);
+
+  const shortFlag = parseArgs(["--background -h"]);
+  assert.equal(shortFlag.options.help, true);
+  assert.deepEqual(shortFlag.positionals, ["--background"]);
+
+  const afterDoubleDash = parseArgs(["--", "--help"]);
+  assert.equal(afterDoubleDash.options.help, undefined);
+  assert.deepEqual(afterDoubleDash.positionals, ["--help"]);
+});

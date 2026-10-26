@@ -182,8 +182,41 @@ flowchart LR
     COMP --> WT["Isolated Git Worktrees (.patch export & 1-click apply)"]
 ```
 
-- **Cross-Platform Process Discovery (`ls-discovery.mjs`):** Automatically discovers `language_server` across **Windows** (PowerShell CIM/TCP), **macOS Apple Silicon & Intel** (`Antigravity.app` / `language_server_macos_arm` via `ps -axww` + `lsof` + `/private` symlink normalization), and **Linux** (`ps` + `lsof` / `ss -tlnp`), probing IPv4 `127.0.0.1` first to avoid IPv6 `::1` loopback delays.
+- **Cross-Platform Process Discovery (`ls-discovery.mjs`):** Automatically discovers `language_server` across **Windows** (`netstat -ano` + WMI CIM), **macOS Apple Silicon & Intel** (`Antigravity.app` / `language_server_macos_arm` via `ps -axww` + `lsof` + `/private` symlink normalization), and **Linux** (`ps` + `lsof` / `ss -tlnp`), probing IPv4 `127.0.0.1` first to avoid IPv6 `::1` loopback delays.
 - **Future-Proof RPC Resilience (`agy-runtime.mjs`):** Optional internal Connect RPC calls gracefully fall back to `agentapi`, git diffing, or offline brain logs if an endpoint changes in a future Antigravity Desktop release.
+
+---
+
+## 🎛️ Model Tiers, Concrete Models & CLI Permission Modes
+
+### 1. Unified Canonical Model Tiers (`--model`)
+Canonical tier names mean the **exact same thing** across both `desktop-live` (`agentapi`) and `cli-headless` (`agy` CLI):
+
+| Canonical Tier (`--model`) | Aliases | `desktop-live` (`agentapi`) | `cli-headless` (`agy` CLI) | Intended Use |
+| :--- | :--- | :--- | :--- | :--- |
+| **`pro`** *(default)* | `pro`, `gemini-pro` | `--model=pro` | `--model gemini-4-argon-high` | Deep reasoning, architecture, session transfers, complex refactors |
+| **`flash`** | `flash`, `gemini-flash` | `--model=flash` | `--model gemini-3.8-flash-medium` | Fast balanced edits, code reviews, quick media analysis |
+| **`flash_lite`** | `flash_lite`, `flash-lite`, `lite`, `fast` | `--model=flash_lite` | `--model gemini-3.8-flash-low` | Lowest-latency lightweight checks |
+
+### 2. Concrete Model IDs (`--backend cli --model <id>`)
+Antigravity 2.0 Desktop's `agentapi` accepts **only** the three canonical tiers above (`pro`, `flash`, `flash_lite`). Passing a concrete model ID on `desktop-live` is **explicitly rejected with a clear validation error** (never silently downgraded).
+
+To target a specific concrete model from `agy models` while Desktop is open, pass `--backend cli`:
+- **Gemini 4 Argon:** `gemini-4-argon-high`, `gemini-4-argon-medium`, `gemini-4-argon-low`
+- **Gemini 3.8 Flash:** `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`
+- **Claude 5.5 (in Antigravity):** `claude-opus-5-5-high`, `claude-opus-5-5-medium`, `claude-opus-5-5-low`, `claude-sonnet-5-5-high`, `claude-sonnet-5-5-medium`, `claude-sonnet-5-5-low`
+- **Open-Weight:** `gpt-oss-120b-medium`
+
+```bash
+# Example: run a concrete CLI model explicitly even when Antigravity Desktop is open
+node plugins/agy/scripts/agy-companion.mjs task --backend cli --model gemini-4-argon-high --write "Audit and fix src/"
+```
+
+### 3. CLI Execution & Tool Permission Modes (`cli-headless`)
+When executing via `agy` CLI (`cli-headless`), `claude-antigravity` enforces strict least-privilege defaults:
+- **Read-Only Default (`--mode=plan`):** Used whenever `--write` is **not** set (e.g. `/agy:review`, `/agy:adversarial-review`, `/agy:review-plan`, `/agy:transfer --handoff-only`, or direct `agy-companion.mjs task "<prompt>"` without `--write`). No file edits or unapproved shell mutations are auto-approved.
+- **Write-Capable Mode (`--mode=auto --dangerously-skip-permissions`):** Enabled **only** when write execution is explicitly requested (`--write`, `--worktree`, `/agy:rescue` write tasks, `/agy:transfer` with next-step execution, or `/agy:media` report generation).
+  > **Security Note:** `--dangerously-skip-permissions` auto-approves all tool calls (file writes and shell commands) non-interactively in headless print mode. Never enable it on untrusted prompts or read-only scripts unless autonomous file/command execution is intended.
 
 ---
 
@@ -224,6 +257,11 @@ flowchart LR
 /agy:undo --apply                               # Revierte el último turno delegado
 /agy:sync-memory --apply                        # Sincroniza CLAUDE.md <-> AGENTS.md con backup
 ```
+
+### Modelos por Ruta (`desktop-live` vs `cli-headless`) y Permisos CLI
+- **Niveles unificados (`pro`, `flash`, `flash_lite`):** Funcionan en **ambos** motores con equivalencia exacta (`pro` -> `gemini-4-argon-high` en CLI; `flash` -> `gemini-3.8-flash-medium`; `flash_lite` -> `gemini-3.8-flash-low`).
+- **Modelos concretos (`gemini-4-argon-high`, `claude-opus-5-5-high`, etc.):** El motor `desktop-live` (`agentapi`) solo acepta los niveles `pro|flash|flash_lite` y rechaza nombres concretos con un error explícito en lugar de degradarlos en silencio. Para usar un modelo concreto de `agy models`, añade `--backend cli --model gemini-4-argon-high`.
+- **Modos de permisos en `agy` CLI:** Por defecto usa `--mode=plan` (solo lectura). Solo activa `--mode=auto --dangerously-skip-permissions` cuando la tarea solicita escritura explícita (`--write`, `--worktree`, `/agy:transfer` ejecutando el siguiente paso o `/agy:media`).
 
 </details>
 

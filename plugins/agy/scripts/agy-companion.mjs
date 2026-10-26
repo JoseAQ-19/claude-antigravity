@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { parseArgs } from "./lib/args.mjs";
+import { normalizeArgv, parseArgs } from "./lib/args.mjs";
 import {
   forkAntigravityConversation,
   getQuotaHud,
@@ -16,7 +16,10 @@ import {
 import {
   cancelAntigravityJob,
   getAntigravityStatus,
-  runDualAntigravityTurn
+  resolveExecutionBackendAndValidateModel,
+  runDualAntigravityTurn,
+  SUPPORTED_CLI_MODELS,
+  UNIFIED_MODEL_TIERS
 } from "./lib/agy-runtime.mjs";
 import {
   buildTransferHandoffBundle,
@@ -61,26 +64,173 @@ import {
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const ROOT_DIR = path.resolve(path.dirname(SCRIPT_PATH), "..");
 
+const MODEL_HELP_FOOTER = [
+  "",
+  "Canonical Model Tiers (work identically on both desktop-live and cli-headless):",
+  ...Object.values(UNIFIED_MODEL_TIERS).map(
+    (t) => `  ${t.tier.padEnd(11)} -> desktop: --model=${t.desktopModel} | cli: --model ${t.cliModel}`
+  ),
+  "",
+  `Concrete CLI Models (require --backend cli when Desktop is running):`,
+  `  ${SUPPORTED_CLI_MODELS.join(", ")}`,
+  "",
+  "CLI Execution & Permission Modes (cli-headless):",
+  "  - Read-only default: uses --mode=plan (never auto-approves destructive commands).",
+  "  - Write tasks (--write, --worktree, transfer w/ next-step, media): uses --mode=auto --dangerously-skip-permissions."
+].join("\n");
+
+const SUBCOMMAND_HELP = {
+  setup: [
+    "Usage: node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--cwd <dir>] [--json]",
+    "",
+    "Verify Google Antigravity 2.0 Desktop (live Connect RPC) and agy CLI readiness, or toggle the stop-time review gate."
+  ].join("\n"),
+  task: [
+    "Usage: node scripts/agy-companion.mjs task [options] <prompt>",
+    "",
+    "Options:",
+    "  --background                Run asynchronously in a detached worker process",
+    "  --wait                      Run synchronously in foreground (default)",
+    "  --write                     Allow file edits (enables --mode=auto --dangerously-skip-permissions on CLI)",
+    "  --worktree                  Execute inside a clean, isolated git worktree (zero file collisions)",
+    "  --keep-worktree             Preserve temporary git worktree directory after completion",
+    "  --resume, --resume-last     Continue the latest workspace Antigravity conversation",
+    "  --fresh                     Start a brand-new conversation even if a previous one exists",
+    "  --conversation <id>         Resume a specific Antigravity conversation ID",
+    "  --backend <auto|desktop|cli> Select engine explicitly (default: auto -> desktop-live if running, else cli)",
+    "  --model, -m <tier|model-id> Model tier (pro|flash|flash_lite) or concrete CLI model ID (with --backend cli)",
+    "  --prompt-file <path>        Read prompt text from a file instead of positional arguments",
+    "  --focus-ui                  Bring Antigravity 2.0 Desktop conversation into visual focus",
+    "  --cwd, -C <dir>             Override target workspace directory",
+    "  --json                      Emit structured JSON output",
+    "  --help, -h                  Show this help message and exit without creating a job",
+    MODEL_HELP_FOOTER
+  ].join("\n"),
+  "task-resume-candidate": [
+    "Usage: node scripts/agy-companion.mjs task-resume-candidate [--cwd <dir>] [--json]",
+    "",
+    "Inspect whether a resumable Antigravity conversation exists for this workspace."
+  ].join("\n"),
+  transfer: [
+    "Usage: node scripts/agy-companion.mjs transfer [options] [next-step instruction]",
+    "",
+    "Teleport the active Claude Code session transcript into Google Antigravity and optionally execute the next step.",
+    "",
+    "Options:",
+    "  --source <claude-jsonl>     Explicit path to Claude Code .jsonl session file",
+    "  --handoff-only              Transfer context without executing the next pending step",
+    "  --no-focus                  Do not focus the conversation in Antigravity 2.0 Desktop UI",
+    "  --background | --wait       Run asynchronously or wait in foreground",
+    "  --backend <auto|desktop|cli> Select engine explicitly (default: auto)",
+    "  --model, -m <tier|model-id> Model tier (pro|flash|flash_lite) or concrete CLI model ID (with --backend cli)",
+    "  --cwd, -C <dir>             Override target workspace directory",
+    "  --json                      Emit structured JSON output",
+    MODEL_HELP_FOOTER
+  ].join("\n"),
+  pull: [
+    "Usage: node scripts/agy-companion.mjs pull [conversation-id] [--list] [--all] [--cwd <dir>] [--json]",
+    "",
+    "Pull a live or offline Antigravity 2.0 conversation trajectory and file diffs back into Claude Code."
+  ].join("\n"),
+  media: [
+    "Usage: node scripts/agy-companion.mjs media <file...> [--no-correlate] [--background|--wait] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--focus-ui] [--json] [question]",
+    "",
+    "Analyze video (.mp4/.mov/.webm), audio (.mp3/.wav/.m4a), PDF, or image files natively via Gemini multimodal perception."
+  ].join("\n"),
+  review: [
+    "Usage: node scripts/agy-companion.mjs review [--background|--wait] [--base <ref>] [--scope <auto|working-tree|branch>] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json]",
+    "",
+    "Run a read-only Google Antigravity code review against uncommitted git changes or a branch diff."
+  ].join("\n"),
+  "adversarial-review": [
+    "Usage: node scripts/agy-companion.mjs adversarial-review [--background|--wait] [--base <ref>] [--scope <auto|working-tree|branch>] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json] [focus text]",
+    "",
+    "Run a skeptical, adversarial Google Antigravity security & edge-case review."
+  ].join("\n"),
+  "review-plan": [
+    "Usage: node scripts/agy-companion.mjs review-plan [--plan <file>] [--background|--wait] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json] [focus text]",
+    "",
+    "Critique an implementation plan (PLAN.md, PRD.md, or Claude Plan Mode file) before writing code."
+  ].join("\n"),
+  quota: [
+    "Usage: node scripts/agy-companion.mjs quota [--show-account] [--cwd <dir>] [--json]",
+    "",
+    "Display live per-model Antigravity 2.0 quota progress bars, model IDs, reset timers, and active jobs."
+  ].join("\n"),
+  undo: [
+    "Usage: node scripts/agy-companion.mjs undo [job-id] [--conversation <id>] [--step <n>] [--apply] [--cwd <dir>] [--json]",
+    "",
+    "Preview (dry-run default) or apply (--apply) a surgical rollback of the latest Antigravity turn."
+  ].join("\n"),
+  fork: [
+    "Usage: node scripts/agy-companion.mjs fork [conversation-id] [--step <n>] [--no-focus] [--cwd <dir>] [--json]",
+    "",
+    "Clone an existing Antigravity 2.0 Desktop conversation into a new branch via ForkConversation RPC."
+  ].join("\n"),
+  "sync-memory": [
+    "Usage: node scripts/agy-companion.mjs sync-memory [--direction <both|claude-to-agy|agy-to-claude>] [--apply] [--cwd <dir>] [--json]",
+    "",
+    "Synchronize shared rules non-destructively between CLAUDE.md and AGENTS.md + .agents/rules/claude-memory-sync.md."
+  ].join("\n"),
+  status: [
+    "Usage: node scripts/agy-companion.mjs status [job-id] [--wait] [--timeout-ms <ms>] [--all] [--cwd <dir>] [--json]",
+    "",
+    "List recorded Antigravity jobs for this workspace or inspect a specific job's status, exit code, and recent log."
+  ].join("\n"),
+  result: [
+    "Usage: node scripts/agy-companion.mjs result [job-id] [--apply-worktree] [--cwd <dir>] [--json]",
+    "",
+    "Retrieve the rendered output of a completed Antigravity job, or apply its isolated git worktree patch."
+  ].join("\n"),
+  cancel: [
+    "Usage: node scripts/agy-companion.mjs cancel [job-id] [--cwd <dir>] [--json]",
+    "",
+    "Cancel an active background Antigravity job and stop its remote Cascade invocation."
+  ].join("\n")
+};
+
+function hasHelpFlag(rawArgv) {
+  const tokens = normalizeArgv(rawArgv);
+  for (const tok of tokens) {
+    if (tok === "--") break;
+    if (tok === "--help" || tok === "-h" || tok === "--help=true") return true;
+  }
+  return false;
+}
+
+function printSubcommandHelp(subcommand) {
+  const body = SUBCOMMAND_HELP[subcommand];
+  if (body) {
+    console.log(body);
+    return;
+  }
+  printUsage();
+}
+
 function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/agy-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/agy-companion.mjs task [--background|--wait] [--write] [--worktree] [--keep-worktree] [--resume|--resume-last|--fresh] [--conversation <id>] [--model <pro|flash|flash_lite>] [--focus-ui] [prompt]",
-      "  node scripts/agy-companion.mjs task-resume-candidate [--json]",
-      "  node scripts/agy-companion.mjs transfer [--source <claude-jsonl>] [--background|--wait] [--handoff-only] [--no-focus] [--model <pro|flash|flash_lite>] [--json] [instruction]",
-      "  node scripts/agy-companion.mjs pull [conversation-id] [--list] [--all] [--json]",
-      "  node scripts/agy-companion.mjs media <file...> [--no-correlate] [--background|--wait] [--model <pro|flash>] [--json] [question]",
-      "  node scripts/agy-companion.mjs review [--background|--wait] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--json]",
-      "  node scripts/agy-companion.mjs adversarial-review [--background|--wait] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--json] [focus text]",
-      "  node scripts/agy-companion.mjs review-plan [--plan <file>] [--background|--wait] [--model <model>] [--json] [focus text]",
-      "  node scripts/agy-companion.mjs quota [--show-account] [--json]",
-      "  node scripts/agy-companion.mjs undo [job-id] [--conversation <id>] [--step <n>] [--apply] [--json]",
-      "  node scripts/agy-companion.mjs fork [conversation-id] [--step <n>] [--no-focus] [--json]",
-      "  node scripts/agy-companion.mjs sync-memory [--direction <both|claude-to-agy|agy-to-claude>] [--apply] [--json]",
-      "  node scripts/agy-companion.mjs status [job-id] [--wait] [--timeout-ms <ms>] [--all] [--json]",
-      "  node scripts/agy-companion.mjs result [job-id] [--apply-worktree] [--json]",
-      "  node scripts/agy-companion.mjs cancel [job-id] [--json]"
+      "  node scripts/agy-companion.mjs <command> [options]   (pass --help to any command for detailed options)",
+      "",
+      "Commands:",
+      "  setup [--enable-review-gate|--disable-review-gate] [--json]",
+      "  task [--background|--wait] [--write] [--worktree] [--keep-worktree] [--resume|--fresh] [--conversation <id>] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--focus-ui] [prompt]",
+      "  task-resume-candidate [--json]",
+      "  transfer [--source <claude-jsonl>] [--background|--wait] [--handoff-only] [--no-focus] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json] [instruction]",
+      "  pull [conversation-id] [--list] [--all] [--json]",
+      "  media <file...> [--no-correlate] [--background|--wait] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json] [question]",
+      "  review [--background|--wait] [--base <ref>] [--scope <auto|working-tree|branch>] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json]",
+      "  adversarial-review [--background|--wait] [--base <ref>] [--scope <auto|working-tree|branch>] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json] [focus text]",
+      "  review-plan [--plan <file>] [--background|--wait] [--backend <auto|desktop|cli>] [--model <tier|model-id>] [--json] [focus text]",
+      "  quota [--show-account] [--json]",
+      "  undo [job-id] [--conversation <id>] [--step <n>] [--apply] [--json]",
+      "  fork [conversation-id] [--step <n>] [--no-focus] [--json]",
+      "  sync-memory [--direction <both|claude-to-agy|agy-to-claude>] [--apply] [--json]",
+      "  status [job-id] [--wait] [--timeout-ms <ms>] [--all] [--json]",
+      "  result [job-id] [--apply-worktree] [--json]",
+      "  cancel [job-id] [--json]",
+      MODEL_HELP_FOOTER
     ].join("\n")
   );
 }
@@ -151,6 +301,7 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
     const turn = await runDualAntigravityTurn(workspaceRoot, {
       prompt: request.prompt,
       title: request.conversationTitle,
+      backend: request.backend || "auto",
       model: request.model || "pro",
       write: request.executeNextStep !== false,
       focusUi: request.focusUi !== false,
@@ -198,6 +349,7 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
       prompt: request.prompt,
       title: request.title,
       resumeConversationId: request.resumeConversationId || null,
+      backend: request.backend || "auto",
       model: request.model || "pro",
       write: Boolean(request.write || request.worktree),
       focusUi: Boolean(request.focusUi),
@@ -271,11 +423,16 @@ async function runTrackedForeground(workspaceRoot, jobRecord, request, asJson) {
   try {
     const execRes = await executeJobRequest(workspaceRoot, jobRecord.id, request, logFile);
     const finalStatus = execRes.exitStatus === 0 ? "completed" : "failed";
+    appendJobLog(
+      logFile,
+      `Finished job (${finalStatus}): exitStatus=${execRes.exitStatus}, backend=${execRes.backend || "unknown"}, conversationId=${execRes.conversationId || "none"}, touchedFiles=${(execRes.touchedFiles ?? []).length}`
+    );
     const completed = {
       ...readJobFile(workspaceRoot, jobRecord.id),
       ...running,
       status: finalStatus,
       phase: finalStatus === "completed" ? "done" : "failed",
+      exitStatus: execRes.exitStatus,
       conversationId: execRes.conversationId,
       backend: execRes.backend,
       touchedFiles: execRes.touchedFiles ?? [],
@@ -289,6 +446,7 @@ async function runTrackedForeground(workspaceRoot, jobRecord, request, asJson) {
       id: jobRecord.id,
       status: finalStatus,
       phase: completed.phase,
+      exitStatus: execRes.exitStatus,
       conversationId: execRes.conversationId,
       backend: execRes.backend,
       touchedFiles: execRes.touchedFiles ?? [],
@@ -361,10 +519,15 @@ async function handleJobWorker(argv) {
   try {
     const execRes = await executeJobRequest(workspaceRoot, jobId, stored.request, logFile);
     const finalStatus = execRes.exitStatus === 0 ? "completed" : "failed";
+    appendJobLog(
+      logFile,
+      `Finished job (${finalStatus}): exitStatus=${execRes.exitStatus}, backend=${execRes.backend || "unknown"}, conversationId=${execRes.conversationId || "none"}, touchedFiles=${(execRes.touchedFiles ?? []).length}`
+    );
     writeJobFile(workspaceRoot, jobId, {
       ...readJobFile(workspaceRoot, jobId),
       status: finalStatus,
       phase: finalStatus === "completed" ? "done" : "failed",
+      exitStatus: execRes.exitStatus,
       conversationId: execRes.conversationId,
       backend: execRes.backend,
       touchedFiles: execRes.touchedFiles ?? [],
@@ -377,6 +540,7 @@ async function handleJobWorker(argv) {
       id: jobId,
       status: finalStatus,
       phase: finalStatus === "completed" ? "done" : "failed",
+      exitStatus: execRes.exitStatus,
       conversationId: execRes.conversationId,
       backend: execRes.backend,
       touchedFiles: execRes.touchedFiles ?? [],
@@ -454,7 +618,7 @@ async function handleTaskResumeCandidate(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "model", "conversation", "prompt-file"],
+    valueOptions: ["cwd", "backend", "model", "conversation", "prompt-file"],
     booleanOptions: [
       "json",
       "background",
@@ -467,8 +631,12 @@ async function handleTask(argv) {
       "fresh",
       "focus-ui"
     ],
-    aliasMap: { C: "cwd", m: "model" }
+    aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
+  if (options.help) {
+    printSubcommandHelp("task");
+    return;
+  }
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
 
@@ -495,6 +663,11 @@ async function handleTask(argv) {
     throw new Error("Provide a task prompt for Antigravity (or use --resume).");
   }
 
+  await resolveExecutionBackendAndValidateModel(workspaceRoot, {
+    backend: options.backend,
+    model: options.model
+  });
+
   const jobId = generateJobId("task");
   const title = resumeConversationId
     ? "Antigravity Follow-up Task"
@@ -514,6 +687,7 @@ async function handleTask(argv) {
     prompt,
     title,
     resumeConversationId,
+    backend: options.backend || "auto",
     model: options.model || "pro",
     write: Boolean(options.write || options.worktree),
     worktree: Boolean(options.worktree),
@@ -530,15 +704,24 @@ async function handleTask(argv) {
 
 async function handleTransfer(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "source", "model"],
+    valueOptions: ["cwd", "source", "backend", "model"],
     booleanOptions: ["json", "background", "wait", "handoff-only", "no-focus"],
-    aliasMap: { C: "cwd", m: "model" }
+    aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
+  if (options.help) {
+    printSubcommandHelp("transfer");
+    return;
+  }
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const extraInstruction = positionals.join(" ").trim();
   const executeNextStep = !options["handoff-only"];
   const focusUi = !options["no-focus"];
+
+  await resolveExecutionBackendAndValidateModel(workspaceRoot, {
+    backend: options.backend,
+    model: options.model
+  });
 
   const sourcePath = resolveClaudeTranscriptPath(cwd, { source: options.source });
   const bundle = buildTransferHandoffBundle(sourcePath, workspaceRoot, {
@@ -561,6 +744,7 @@ async function handleTransfer(argv) {
     handoffPath: bundle.handoffPath,
     conversationTitle: bundle.conversationTitle,
     prompt: bundle.prompt,
+    backend: options.backend || "auto",
     model: options.model || "pro",
     executeNextStep,
     focusUi
@@ -590,12 +774,17 @@ async function handlePull(argv) {
 
 async function handleMedia(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "model"],
+    valueOptions: ["cwd", "backend", "model"],
     booleanOptions: ["json", "background", "wait", "no-correlate", "focus-ui"],
-    aliasMap: { C: "cwd", m: "model" }
+    aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+
+  await resolveExecutionBackendAndValidateModel(workspaceRoot, {
+    backend: options.backend,
+    model: options.model
+  });
 
   const bundle = buildMediaAnalysisBundle(cwd, positionals, {
     correlate: !options["no-correlate"]
@@ -615,7 +804,7 @@ async function handleMedia(argv) {
     prompt: bundle.prompt,
     title: bundle.conversationTitle,
     mediaReportPath: bundle.fullReportPath,
-    // Always default to Gemini pro/flash for native video/audio multimodal ingestion
+    backend: options.backend || "auto",
     model: options.model || "pro",
     write: true,
     focusUi: Boolean(options["focus-ui"])
@@ -630,13 +819,18 @@ async function handleMedia(argv) {
 
 async function handleReview(argv, adversarial = false) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "base", "scope", "model"],
+    valueOptions: ["cwd", "base", "scope", "backend", "model"],
     booleanOptions: ["json", "background", "wait"],
-    aliasMap: { C: "cwd", m: "model" }
+    aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const focusText = positionals.join(" ").trim();
+
+  await resolveExecutionBackendAndValidateModel(workspaceRoot, {
+    backend: options.backend,
+    model: options.model
+  });
 
   const ctx = collectReviewContext(workspaceRoot, {
     base: options.base || null,
@@ -670,6 +864,7 @@ async function handleReview(argv, adversarial = false) {
     type: kind,
     prompt,
     title,
+    backend: options.backend || "auto",
     model: options.model || "pro",
     write: false,
     focusUi: false
@@ -684,12 +879,17 @@ async function handleReview(argv, adversarial = false) {
 
 async function handleReviewPlan(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "plan", "model"],
+    valueOptions: ["cwd", "plan", "backend", "model"],
     booleanOptions: ["json", "background", "wait"],
-    aliasMap: { C: "cwd", m: "model" }
+    aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+
+  await resolveExecutionBackendAndValidateModel(workspaceRoot, {
+    backend: options.backend,
+    model: options.model
+  });
 
   let explicitPlan = options.plan || null;
   const focusParts = [...positionals];
@@ -719,6 +919,7 @@ async function handleReviewPlan(argv) {
     type: "review-plan",
     prompt: bundle.prompt,
     title: bundle.conversationTitle,
+    backend: options.backend || "auto",
     model: options.model || "pro",
     write: false,
     focusUi: false
@@ -865,6 +1066,7 @@ async function handleStatus(argv) {
         `## Job \`${stored.id}\` — **${stored.status}**`,
         `- **Title:** ${stored.title}`,
         `- **Phase:** ${stored.phase || "-"}`,
+        stored.exitStatus != null ? `- **Exit Code:** \`${stored.exitStatus}\`` : null,
         stored.conversationId ? `- **Antigravity Conversation ID:** \`${stored.conversationId}\`` : null,
         stored.errorMessage ? `- **Error:** ${stored.errorMessage}` : null,
         logTail ? `\n### Recent Log\n\`\`\`text\n${logTail}\n\`\`\`` : null
@@ -946,6 +1148,20 @@ async function handleCancel(argv) {
 
 async function main() {
   const [subcommand, ...rest] = process.argv.slice(2);
+  if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+    printUsage();
+    return;
+  }
+  if (subcommand === "help") {
+    const target = normalizeArgv(rest)[0];
+    printSubcommandHelp(target);
+    return;
+  }
+  if (subcommand !== "job-worker" && SUBCOMMAND_HELP[subcommand] && hasHelpFlag(rest)) {
+    printSubcommandHelp(subcommand);
+    return;
+  }
+
   switch (subcommand) {
     case "setup":
       await handleSetup(rest);
@@ -997,11 +1213,6 @@ async function main() {
       break;
     case "job-worker":
       await handleJobWorker(rest);
-      break;
-    case "--help":
-    case "-h":
-    case undefined:
-      printUsage();
       break;
     default:
       throw new Error(`Unknown command "${subcommand}". Run with --help for usage.`);

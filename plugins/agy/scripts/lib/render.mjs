@@ -152,8 +152,9 @@ export function renderQuotaHud(hud) {
     );
     for (const m of hud.models) {
       const tag = m.isRecommended ? " *(Recommended)*" : "";
+      const idBadge = m.modelId ? ` (\`${escapeMarkdownCell(m.modelId)}\`)` : "";
       lines.push(
-        `| **${escapeMarkdownCell(m.label)}**${tag} | \`${m.bar}\` | **${m.remainingPct.toFixed(1)}%** | ${m.resetIn} | ${m.supportsImages ? "Yes" : "-"} |`
+        `| **${escapeMarkdownCell(m.label)}**${idBadge}${tag} | \`${m.bar}\` | **${m.remainingPct.toFixed(1)}%** | ${m.resetIn} | ${m.supportsImages ? "Yes" : "-"} |`
       );
     }
   }

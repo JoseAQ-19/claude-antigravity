@@ -332,6 +332,7 @@ export async function getQuotaHud(cwd, options = {}) {
     const resetTime = cfg?.quotaInfo?.resetTime || null;
     return {
       label: cfg.label || "Model",
+      modelId: cfg.modelId || null,
       remainingFraction,
       remainingPct: Math.round(remainingFraction * 1000) / 10,
       bar: renderProgressBar(remainingFraction, 12),
