@@ -101,23 +101,21 @@ test("agy-companion subcommands handle --help/-h without creating jobs and rejec
 
   try {
     // 1. `task --help` and `task "--background --help"` print usage and create ZERO jobs
-    const helpRes = spawnSync(process.execPath, [COMPANION, "task", "--help"], {
+    const helpRes = await execFileAsync(process.execPath, [COMPANION, "task", "--help"], {
       encoding: "utf8",
       env: mockEnv
     });
-    assert.equal(helpRes.status, 0, helpRes.stderr);
     assert.match(helpRes.stdout, /Usage: node scripts\/agy-companion\.mjs task/);
     assert.match(helpRes.stdout, /Canonical Model Tiers/);
 
-    const singleArgHelp = spawnSync(process.execPath, [COMPANION, "transfer", "--background -h"], {
+    const singleArgHelp = await execFileAsync(process.execPath, [COMPANION, "transfer", "--background -h"], {
       encoding: "utf8",
       env: mockEnv
     });
-    assert.equal(singleArgHelp.status, 0, singleArgHelp.stderr);
     assert.match(singleArgHelp.stdout, /Usage: node scripts\/agy-companion\.mjs transfer/);
 
     // Confirm zero jobs were created by --help
-    const statusAfterHelp = spawnSync(process.execPath, [COMPANION, "status", "--json"], {
+    const statusAfterHelp = await execFileAsync(process.execPath, [COMPANION, "status", "--json"], {
       encoding: "utf8",
       env: mockEnv
     });
@@ -125,16 +123,21 @@ test("agy-companion subcommands handle --help/-h without creating jobs and rejec
     assert.equal(statusJson.jobs.length, 0, "--help must NEVER create a job record");
 
     // 2. Concrete CLI model ID passed to desktop-live fails immediately BEFORE creating any job
-    const badModelRes = spawnSync(
-      process.execPath,
-      [COMPANION, "task", "--background", "--model", "gemini-4-argon-high", "Write a file"],
-      { encoding: "utf8", env: mockEnv }
-    );
-    assert.notEqual(badModelRes.status, 0);
-    assert.match(badModelRes.stderr, /Unsupported --model "gemini-4-argon-high" for backend "desktop-live"/);
-    assert.match(badModelRes.stderr, /--backend cli/);
+    let badModelErr = null;
+    try {
+      await execFileAsync(
+        process.execPath,
+        [COMPANION, "task", "--background", "--model", "gemini-4-argon-high", "Write a file"],
+        { encoding: "utf8", env: mockEnv }
+      );
+    } catch (err) {
+      badModelErr = err;
+    }
+    assert.ok(badModelErr, "Expected task with concrete CLI model on desktop-live to reject");
+    assert.match(String(badModelErr.stderr ?? ""), /Unsupported --model "gemini-4-argon-high" for backend "desktop-live"/);
+    assert.match(String(badModelErr.stderr ?? ""), /--backend cli/);
 
-    const statusAfterBadModel = spawnSync(process.execPath, [COMPANION, "status", "--json"], {
+    const statusAfterBadModel = await execFileAsync(process.execPath, [COMPANION, "status", "--json"], {
       encoding: "utf8",
       env: mockEnv
     });
@@ -161,17 +164,15 @@ test("agy-companion subcommands handle --help/-h without creating jobs and rejec
     }
 
     const cliJobEnv = {
-      ...process.env,
-      CLAUDE_PLUGIN_DATA: tmpData,
+      ...mockEnv,
       AGY_CLI_PATH: mockBin
     };
-    const jobRes = spawnSync(
+    await execFileAsync(
       process.execPath,
       [COMPANION, "task", "--backend", "cli", "--model", "flash", "--json", "Run empty-text test"],
       { encoding: "utf8", env: cliJobEnv }
     );
-    assert.equal(jobRes.status, 0, jobRes.stderr);
-    const allJobsRes = spawnSync(process.execPath, [COMPANION, "status", "--json"], {
+    const allJobsRes = await execFileAsync(process.execPath, [COMPANION, "status", "--json"], {
       encoding: "utf8",
       env: cliJobEnv
     });
@@ -180,7 +181,7 @@ test("agy-companion subcommands handle --help/-h without creating jobs and rejec
     assert.equal(jobsList[0].status, "completed");
     assert.equal(jobsList[0].exitStatus, 0);
 
-    const detailRes = spawnSync(process.execPath, [COMPANION, "status", jobsList[0].id], {
+    const detailRes = await execFileAsync(process.execPath, [COMPANION, "status", jobsList[0].id], {
       encoding: "utf8",
       env: cliJobEnv
     });
