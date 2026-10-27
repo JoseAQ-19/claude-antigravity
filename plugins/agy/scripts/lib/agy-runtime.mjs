@@ -1,11 +1,12 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveWorkspaceHandoffDir } from "./claude-session-parser.mjs";
 import { connectRpcPost, discoverLanguageServer, findAgyCli } from "./ls-discovery.mjs";
 import { resolveWorkspaceRoot } from "./state.mjs";
+import { errorText, executionPrompt, failureKind, isWithin, scopeViolations, verifyFiles } from "./job-outcome.mjs";
 
 const MAX_WINDOWS_SAFE_PROMPT_CHARS = 12000;
 
@@ -350,19 +351,9 @@ function invokeAgentApi(conn, args, projectId = null) {
   return parsed;
 }
 
-function unquoteGitPorcelainPath(rawRel) {
-  let rel = String(rawRel ?? "").trim();
-  const arrowIdx = rel.indexOf(" -> ");
-  if (arrowIdx !== -1) rel = rel.slice(arrowIdx + 4).trim();
-  if (rel.startsWith('"') && rel.endsWith('"')) {
-    rel = rel.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-  return rel;
-}
-
-function snapshotWorkspaceFiles(workspaceRoot) {
+export function snapshotWorkspaceFiles(workspaceRoot) {
   try {
-    const res = spawnSync("git", ["status", "--porcelain", "-uall"], {
+    const res = spawnSync("git", ["status", "--porcelain=v1", "-z", "-uall"], {
       cwd: workspaceRoot,
       encoding: "utf8",
       windowsHide: true,
@@ -370,20 +361,25 @@ function snapshotWorkspaceFiles(workspaceRoot) {
     });
     if (res.status !== 0) return null;
     const map = new Map();
-    for (const line of String(res.stdout ?? "").split(/\r?\n/)) {
+    const entries = String(res.stdout ?? "").split("\0");
+    for (let i = 0; i < entries.length; i += 1) {
+      const line = entries[i];
       if (line.length < 4) continue;
       const gitCode = line.slice(0, 2);
-      const rel = unquoteGitPorcelainPath(line.slice(3));
+      const rel = line.slice(3);
+      if (/[RC]/.test(gitCode)) i += 1; // -z emits destination then original name.
       if (!rel || rel.replace(/\\/g, "/").includes(".claude/agy-handoffs")) continue;
       const abs = path.resolve(workspaceRoot, rel);
       let mtimeMs = 0;
       let size = -1;
+      let digest = null;
       try {
-        const st = fs.statSync(abs);
+        const st = fs.lstatSync(abs);
         mtimeMs = st.mtimeMs;
         size = st.size;
+        if (st.isFile()) digest = createHash("sha256").update(fs.readFileSync(abs)).digest("hex");
       } catch {}
-      map.set(abs, { gitCode, mtimeMs, size });
+      map.set(abs, { gitCode, mtimeMs, size, digest });
     }
     return map;
   } catch {
@@ -391,14 +387,17 @@ function snapshotWorkspaceFiles(workspaceRoot) {
   }
 }
 
-function diffWorkspaceSnapshots(preSnap, postSnap) {
+export function diffWorkspaceSnapshots(preSnap, postSnap) {
   if (!preSnap || !postSnap) return [];
   const changed = [];
   for (const [abs, curr] of postSnap.entries()) {
     const prev = preSnap.get(abs);
-    if (!prev || prev.gitCode !== curr.gitCode || prev.mtimeMs !== curr.mtimeMs || prev.size !== curr.size) {
+    if (!prev || prev.gitCode !== curr.gitCode || prev.digest !== curr.digest || prev.size !== curr.size) {
       changed.push(abs);
     }
+  }
+  for (const abs of preSnap.keys()) {
+    if (!postSnap.has(abs)) changed.push(abs); // Reverting a pre-existing dirty file is also a change.
   }
   return changed;
 }
@@ -445,6 +444,7 @@ export function extractTurnDataFromSteps(steps, startIndex = 0) {
   let hasActiveSteps = false;
   let hasPlannerResponse = false;
   let hasErrorStep = false;
+  let errorMessage = "";
 
   for (const step of slice) {
     const statusStr = String(step.status ?? "").toUpperCase();
@@ -453,6 +453,7 @@ export function extractTurnDataFromSteps(steps, startIndex = 0) {
     }
     if (statusStr.includes("ERROR") || statusStr.includes("FAILED")) {
       hasErrorStep = true;
+      errorMessage = errorText(step.error) || errorText(step.errorMessage) || errorText(step.errorStep) || errorMessage;
     }
     const pr = step.plannerResponse;
     if (pr && typeof pr === "object") {
@@ -482,6 +483,7 @@ export function extractTurnDataFromSteps(steps, startIndex = 0) {
     hasActiveSteps,
     hasPlannerResponse,
     hasErrorStep,
+    errorMessage,
     finalMessage: finalMessage || notifyMessage,
     reasoningSummary: reasoningSummary.slice(-6)
   };
@@ -504,8 +506,8 @@ export function formatEmptyTurnMessage({
 
   if (timedOut) {
     return relFiles.length > 0
-      ? `Antigravity turn timed out after ${stepCount} step(s) on ${convRef}; partial file changes detected (${relFiles.length}): ${filesList}.`
-      : `Antigravity turn timed out after ${stepCount} step(s) on ${convRef} with no repository file changes detected.`;
+      ? `Antigravity turn reached its time limit (${stepCount} step(s) observed) on ${convRef}; partial file changes detected (${relFiles.length}): ${filesList}.`
+      : `Antigravity turn reached its time limit (${stepCount} step(s) observed) on ${convRef} with no repository file changes detected.`;
   }
 
   if (relFiles.length > 0) {
@@ -527,13 +529,13 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-export async function runDesktopTurn(conn, cwd, options = {}) {
+async function runDesktopTurnOnce(conn, cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const callAgentApi = options.invokeAgentApiFn ?? invokeAgentApi;
   const preSnap = snapshotWorkspaceFiles(workspaceRoot);
   const modelTier = normalizeDesktopModelTier(options.model, options.defaultModelTier || "pro");
   const projectId = await ensureDesktopProjectId(conn, workspaceRoot);
-  const safePrompt = spillLargePromptIfNeeded(workspaceRoot, options.prompt, options.kind || "task");
+  const safePrompt = spillLargePromptIfNeeded(workspaceRoot, executionPrompt(options.prompt, options), options.kind || "task");
 
   let conversationId = options.resumeConversationId || null;
   let initialStepCount = 0;
@@ -577,12 +579,14 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
   // 1. Wait briefly until the new user turn registers in GetCascadeTrajectory
   let steps = [];
   let lastTrajStatus = null;
+  let trajectoryError = "";
   if (!trajectoryRpcUnsupported) {
     for (let i = 0; i < 25 && Date.now() < deadline; i += 1) {
       try {
         const traj = await connectRpcPost(conn.address, "GetCascadeTrajectory", { cascadeId: conversationId }, conn.csrfToken, 5000);
         steps = traj?.trajectory?.steps ?? [];
         lastTrajStatus = traj?.status || traj?.trajectory?.status || null;
+        trajectoryError = errorText(traj?.error) || errorText(traj?.trajectory?.error);
         if (steps.length > initialStepCount) break;
       } catch (err) {
         if (isRpcMethodUnsupportedError(err)) {
@@ -604,6 +608,7 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
     } catch {}
     return {
       exitStatus: 0,
+      completionVerified: false,
       backend: "desktop-live",
       conversationId,
       projectId,
@@ -642,6 +647,7 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
       const prevLen = steps.length;
       steps = traj?.trajectory?.steps ?? [];
       lastTrajStatus = traj?.status || traj?.trajectory?.status || lastTrajStatus;
+      trajectoryError = errorText(traj?.error) || errorText(traj?.trajectory?.error) || trajectoryError;
 
       if (steps.length > lastLoggedStepCount) {
         lastLoggedStepCount = steps.length;
@@ -658,6 +664,7 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
       extracted = extractTurnDataFromSteps(steps, initialStepCount);
 
       if (lastTrajStatus) {
+        if ((isTrajectoryError(lastTrajStatus) || isTrajectoryCanceled(lastTrajStatus)) && extracted.stepCount > 0) break;
         // Authoritative trajectory status from Antigravity Hub: keep waiting while RUNNING/QUEUED/PENDING
         if (!isTrajectoryRunning(lastTrajStatus) && !extracted.hasActiveSteps && extracted.stepCount > 0) {
           break;
@@ -674,7 +681,9 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
       }
     } catch (err) {
       if (isRpcMethodUnsupportedError(err)) {
-        break;
+        return { exitStatus: 0, completionVerified: false, backend: "desktop-live", conversationId, projectId,
+          finalMessage: "Task dispatched; trajectory monitoring became unavailable. Completion must be checked in Antigravity Desktop.",
+          touchedFiles: diffWorkspaceSnapshots(preSnap, snapshotWorkspaceFiles(workspaceRoot)), reasoningSummary: extracted.reasoningSummary };
       }
     }
 
@@ -687,15 +696,16 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
 
   // 4. Collect touched files by merging GetTrajectoryFileDiffs + workspace git snapshot diff
   const touchedSet = new Set();
-  const normWs = normalizeUriPathForCompare(workspaceRoot);
+  const outOfWorkspaceFiles = [];
   try {
     const diffRes = await connectRpcPost(conn.address, "GetTrajectoryFileDiffs", { conversationId }, conn.csrfToken, 6000);
     const diffs = Array.isArray(diffRes?.diffs) ? diffRes.diffs : [];
     for (const d of diffs) {
       const localPath = d?.uri ? fileUriToLocalPath(d.uri) : null;
       if (!localPath) continue;
-      const np = normalizeUriPathForCompare(localPath);
-      if (np.startsWith(normWs) && !np.includes("/.claude/agy-handoffs/")) {
+      if (!isWithin(workspaceRoot, localPath)) {
+        outOfWorkspaceFiles.push(path.resolve(localPath));
+      } else if (!options.resumeConversationId && !localPath.replace(/\\/g, "/").includes("/.claude/agy-handoffs/")) {
         touchedSet.add(path.resolve(localPath));
       }
     }
@@ -716,12 +726,17 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
     exitStatus = 130;
   } else if (isTrajectoryError(lastTrajStatus)) {
     exitStatus = 1;
+  } else if (extracted.errorMessage && !isTrajectoryRunning(lastTrajStatus)) {
+    exitStatus = 1;
   } else if (extracted.stepCount === 0) {
     exitStatus = 1;
   }
 
+  const errorMessage = timedOut ? `Antigravity Desktop timed out after ${Math.round(timeoutMs / 1000)}s (${extracted.stepCount} steps observed).` :
+    exitStatus !== 0 ? trajectoryError || extracted.errorMessage || extracted.finalMessage || `Antigravity Desktop ended with ${lastTrajStatus || "no completed turn"}.` : null;
   const finalMessage =
     extracted.finalMessage ||
+    (exitStatus !== 0 && !timedOut ? `${errorMessage} Partial file changes detected: ${touchedFiles.length}.` : "") ||
     formatEmptyTurnMessage({
       workspaceRoot,
       backend: "desktop-live",
@@ -737,14 +752,98 @@ export async function runDesktopTurn(conn, cwd, options = {}) {
     conversationId,
     projectId,
     trajectoryStatus: lastTrajStatus,
+    completionVerified: !timedOut,
+    errorMessage,
+    failureKind: exitStatus !== 0 ? failureKind(errorMessage, exitStatus) : null,
+    timedOut,
+    stepCount: extracted.stepCount,
     finalMessage,
     reasoningSummary: extracted.reasoningSummary,
-    touchedFiles
+    touchedFiles,
+    outOfWorkspaceFiles
   };
 }
 
+async function stopDesktopBeforeResume(conn, conversationId, options) {
+  try {
+    await connectRpcPost(conn.address, "CancelCascadeInvocation", { cascadeId: conversationId, killBackgroundTasks: true }, conn.csrfToken, 5000);
+    const deadline = Date.now() + (options.stopTimeoutMs ?? 15000);
+    do {
+      const traj = await connectRpcPost(conn.address, "GetCascadeTrajectory", { cascadeId: conversationId }, conn.csrfToken, 5000);
+      const status = traj?.status || traj?.trajectory?.status;
+      if (status && !isTrajectoryRunning(status) &&
+        (!extractTurnDataFromSteps(traj?.trajectory?.steps).hasActiveSteps || isTrajectoryCanceled(status) || isTrajectoryError(status))) return true;
+      await sleep(options.pollIntervalMs ?? 400);
+    } while (Date.now() < deadline);
+  } catch {}
+  return false;
+}
+
+export async function runDesktopTurn(conn, cwd, options = {}) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const initialSnapshot = snapshotWorkspaceFiles(workspaceRoot);
+  const maxResumes = options.maxResumes ?? 2;
+  const checkpoints = [];
+  const touched = new Set();
+  let resumeConversationId = options.resumeConversationId;
+  let prompt = options.prompt;
+  for (let attempt = 0; ; attempt += 1) {
+    let turn;
+    try {
+      turn = await runDesktopTurnOnce(conn, cwd, { ...options, prompt, resumeConversationId });
+    } catch (err) {
+      if (!checkpoints.length) throw err;
+      turn = { exitStatus: 1, backend: "desktop-live", conversationId: resumeConversationId,
+        errorMessage: err.message, failureKind: failureKind(err.message), finalMessage: err.message, touchedFiles: [] };
+    }
+    for (const file of turn.touchedFiles || []) touched.add(file);
+    turn.touchedFiles = [...touched];
+    turn.fileVerification = verifyFiles(turn.touchedFiles);
+    turn.scopeViolations = scopeViolations(workspaceRoot, [...turn.touchedFiles, ...(turn.outOfWorkspaceFiles || [])], options);
+    if (turn.scopeViolations.length) {
+      if (turn.timedOut) turn.remoteStopped = await stopDesktopBeforeResume(conn, turn.conversationId, options);
+      turn.exitStatus = 1;
+      turn.failureKind = "scope_violation";
+      turn.errorMessage = `Changes outside the assigned scope detected: ${turn.scopeViolations.join(", ")}`;
+    }
+    turn.resumeCount = attempt;
+    turn.checkpoints = checkpoints;
+    if (!["timeout", "step_limit"].includes(turn.failureKind) || !turn.conversationId) return turn;
+    turn.exitStatus = 124;
+    const checkpoint = { attempt: attempt + 1, savedAt: new Date().toISOString(), conversationId: turn.conversationId,
+      reason: turn.errorMessage, stepCount: turn.stepCount, touchedFiles: turn.touchedFiles,
+      fileVerification: turn.fileVerification, summary: turn.finalMessage, remainingWork: "Verify current files against the original task and finish pending work." };
+    checkpoints.push(checkpoint);
+    options.onCheckpoint?.(checkpoint);
+    // Never overlap follow-up messages with an executor still writing files.
+    const stopped = turn.timedOut ? await stopDesktopBeforeResume(conn, turn.conversationId, options) : turn.completionVerified;
+    turn.remoteStopped = Boolean(stopped);
+    for (const file of diffWorkspaceSnapshots(initialSnapshot, snapshotWorkspaceFiles(workspaceRoot))) touched.add(file);
+    turn.touchedFiles = [...touched];
+    turn.fileVerification = verifyFiles(turn.touchedFiles);
+    checkpoint.touchedFiles = turn.touchedFiles;
+    checkpoint.fileVerification = turn.fileVerification;
+    checkpoint.remoteStopped = turn.remoteStopped;
+    options.onCheckpoint?.(checkpoint);
+    turn.scopeViolations = scopeViolations(workspaceRoot, turn.touchedFiles, options);
+    if (turn.scopeViolations.length) {
+      turn.exitStatus = 1;
+      turn.failureKind = "scope_violation";
+      turn.errorMessage = `Changes outside the assigned scope detected: ${turn.scopeViolations.join(", ")}`;
+      return turn;
+    }
+    if (!stopped || attempt >= maxResumes) return turn;
+    resumeConversationId = turn.conversationId;
+    options.onProgress?.({ phase: "resuming", conversationId: resumeConversationId,
+      message: `Checkpoint saved; resuming the same conversation (${attempt + 1}/${maxResumes}).` });
+    prompt = ["Continue the interrupted task in this same conversation. Inspect existing changes first and preserve completed work.",
+      `Original task:\n${options.prompt}`, `Recovery checkpoint:\n${JSON.stringify(checkpoint)}`,
+      "Finish remaining work, run the relevant checks, and report the result. Do not repeat completed actions."].join("\n\n");
+  }
+}
+
 export function buildCliTurnArgs(workspaceRoot, options = {}) {
-  const safePrompt = spillLargePromptIfNeeded(workspaceRoot, options.prompt, options.kind || "cli");
+  const safePrompt = spillLargePromptIfNeeded(workspaceRoot, executionPrompt(options.prompt, options), options.kind || "cli");
   const args = ["--output-format", "stream-json", "--disable-slash-commands"];
   if (options.resumeConversationId) {
     args.push("--conversation", options.resumeConversationId);
@@ -793,15 +892,15 @@ export function extractCliStreamEvent(ev) {
 
   if (ev.result && typeof ev.result === "object") {
     if (ev.result.status === "ERROR" || ev.result.error) {
-      errorMessage = String(ev.result.error || "agy CLI returned status ERROR");
+      errorMessage = errorText(ev.result.error) || errorText(ev.result.message) || errorText(ev.result.response) || "agy CLI returned status ERROR";
     }
     if (typeof ev.result.response === "string" && ev.result.response.trim()) {
       finalResponse = ev.result.response;
     }
   } else if (typeof ev.result === "string") {
     finalResponse = ev.result;
-  } else if (typeof ev.error === "string" && ev.error.trim()) {
-    errorMessage = ev.error;
+  } else if (ev.error) {
+    errorMessage = errorText(ev.error) || "agy CLI returned an error";
   } else if (typeof ev.text === "string") {
     streamedDelta = ev.text;
   } else if (typeof ev.content === "string" && (ev.type === "assistant" || ev.type === "message" || ev.type === "result")) {
@@ -898,7 +997,7 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
       clearTimeout(timer);
       reject(err);
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (stdoutBuf.trim()) processLine(stdoutBuf);
 
@@ -908,13 +1007,17 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
         touchedFiles = diffWorkspaceSnapshots(preSnap, postSnap);
       }
 
-      const rawExit = timedOut ? 124 : code ?? 0;
-      const exitStatus = explicitError && rawExit === 0 ? 1 : rawExit;
+      const rawExit = timedOut ? 124 : code ?? (signal ? 130 : 1);
+      let exitStatus = explicitError && rawExit === 0 ? 1 : rawExit;
       const assembledText = (
         explicitResultText ??
         (streamedText.trim() || nonJsonLines.join("\n").trim())
       ).trim();
 
+      let errorMessage = timedOut ? `agy CLI timed out after ${Math.round(timeoutMs / 1000)}s.` :
+        exitStatus !== 0 ? explicitError || stderrBuf.trim() || assembledText || `agy CLI exited with code ${exitStatus}${signal ? ` (${signal})` : ""}.` : null;
+      const violations = scopeViolations(workspaceRoot, touchedFiles, options);
+      if (violations.length) { exitStatus = 1; errorMessage = `Changes outside the assigned scope detected: ${violations.join(", ")}`; }
       const finalMessage =
         assembledText ||
         explicitError ||
@@ -938,6 +1041,10 @@ export async function runCliTurn(cliInfo, cwd, options = {}) {
         finalMessage,
         reasoningSummary: reasoningSummary.slice(-6),
         touchedFiles,
+        fileVerification: verifyFiles(touchedFiles),
+        scopeViolations: violations,
+        errorMessage,
+        failureKind: violations.length ? "scope_violation" : exitStatus !== 0 ? failureKind(errorMessage, exitStatus) : null,
         stderr: stderrBuf.trim()
       });
     });

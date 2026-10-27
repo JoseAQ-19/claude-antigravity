@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-10-27
+
+### Fixed
+- Desktop timeouts and explicit executor step-limit errors now save a recovery checkpoint (conversation, partial output, changed files and SHA-256 fingerprints), stop and confirm the previous invocation is idle, and continue in the same conversation up to two times. Unrecoverable or exhausted attempts remain `interrupted` with exit 124 rather than claiming success. Quota errors never auto-retry.
+- Job records, status Summary, result headers and logs retain the actual quota/reset, timeout, write or execution error even when the model returned partial text or created a conversation. Older failed job records also expose their stored output as diagnostics.
+- Background launch uses a startup acknowledgement and explicit starting/terminal records, preserves boot stderr, and no longer overwrites a worker's state with stale queued data. Dead workers and launches without acknowledgement become explicit failures. `status <id> --wait` exits with the recorded job outcome.
+- Missing trajectory monitoring is reported as `dispatched` with unverified completion. Interrupted or unmonitored isolated worktrees are retained for recovery.
+- Atomic JSON writes and authoritative per-job records prevent truncated reads and hide fewer concurrent-index races. Git file snapshots handle NUL-separated Unicode paths, same-size edits and restoration of previously dirty files.
+
+### Added
+- `--timeout-ms` and bounded `--max-resumes <0..5>` on job commands; `task --allowed-path <path>` can be repeated to declare file/directory scope. Prompt boundaries and post-run scope checks report unexpected edits without deleting them. This is detection, not an OS sandbox.
+- Hermetic regressions cover recovery, quota failures with partial output, background acknowledgement, lost workers, file fingerprints, scope violations and false success rendering. Existing `task --help` protection remains covered.
+
 ## [1.1.2] - 2026-10-26
 
 ### Fixed

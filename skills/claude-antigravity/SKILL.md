@@ -34,4 +34,6 @@ If invoked outside the Claude plugin via `npx skills add JoseAQ-19/claude-antigr
 
 ## Safety Contract
 - Always verify delegated file changes (`git diff` + project tests) before merging.
+- Use the companion's `--background` launcher for long tasks. Preserve recorded errors, interrupted/dispatched states, recovery checkpoints and partial files; shell completion and worker startup do not establish task success.
+- Pass repeated `--allowed-path <path>` options when edit scope is explicit. These prompt/post-run checks detect observed violations; use `--worktree` for concurrent task isolation.
 - Never extract or proxy OAuth tokens; delegate strictly through the user's running Antigravity 2.0 Desktop app or authenticated `agy` CLI.

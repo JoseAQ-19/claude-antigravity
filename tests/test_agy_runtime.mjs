@@ -185,6 +185,7 @@ test("ensureDesktopProjectId and runDesktopTurn execute against mock Connect RPC
       }
     });
     assert.equal(degradedRes.exitStatus, 0);
+    assert.equal(degradedRes.completionVerified, false);
     assert.equal(degradedRes.conversationId, "conv-mock-200");
     assert.match(degradedRes.finalMessage, /Future Build Thread/);
   } finally {
@@ -281,7 +282,8 @@ test("buildCliTurnArgs, normalizeCliModelArgs, runCliTurn, and renderTransferRes
     assert.equal(cliArgs[1], "stream-json");
     assert.equal(cliArgs.includes("pro"), false);
     assert.ok(cliArgs.includes("gemini-4-argon-high"));
-    assert.equal(cliArgs[cliArgs.length - 1], "--print=Execute next step");
+    assert.match(cliArgs[cliArgs.length - 1], /^--print=Execute next step\n/);
+    assert.match(cliArgs[cliArgs.length - 1], /Execution boundaries:/);
 
     // 2. Verify real `agy` v1.4.7 NDJSON stream-json event extraction
     const initEv = extractCliStreamEvent({ event: "init", conversation_id: "cid-real-1" });

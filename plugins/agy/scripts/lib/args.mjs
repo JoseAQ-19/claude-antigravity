@@ -47,6 +47,10 @@ export function parseArgs(rawArgv, config = {}) {
   const booleanOptions = new Set(["help", ...(config.booleanOptions ?? [])]);
   const aliasMap = { h: "help", ...(config.aliasMap ?? {}) };
   const options = {};
+  const repeatableOptions = new Set(config.repeatableOptions ?? []);
+  const setValue = (name, value) => {
+    options[name] = repeatableOptions.has(name) ? [...(options[name] || []), value] : value;
+  };
   const positionals = [];
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -65,10 +69,10 @@ export function parseArgs(rawArgv, config = {}) {
       }
       if (valueOptions.has(name)) {
         if (eqIdx !== -1) {
-          options[name] = token.slice(eqIdx + 1);
+          setValue(name, token.slice(eqIdx + 1));
         } else {
           if (i + 1 >= argv.length) throw new Error(`Missing value for --${rawName}`);
-          options[name] = argv[i + 1];
+          setValue(name, argv[i + 1]);
           i += 1;
         }
         continue;
@@ -85,7 +89,7 @@ export function parseArgs(rawArgv, config = {}) {
       }
       if (valueOptions.has(mapped)) {
         if (i + 1 >= argv.length) throw new Error(`Missing value for -${shortName}`);
-        options[mapped] = argv[i + 1];
+        setValue(mapped, argv[i + 1]);
         i += 1;
         continue;
       }

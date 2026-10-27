@@ -1,3 +1,5 @@
+import { jobStatus } from "./job-outcome.mjs";
+
 function escapeMarkdownCell(val) {
   return String(val ?? "")
     .replace(/\\/g, "\\\\")
@@ -32,13 +34,15 @@ export function renderSetupReport(report) {
 }
 
 export function renderTurnResult(result, meta = {}) {
-  const failed = Number(result.exitStatus ?? 0) !== 0 && !result.conversationId;
-  const heading = failed
-    ? `## ${meta.title || "Antigravity Task"} (FAILED)`
-    : `## ${meta.title || "Antigravity Result"}`;
+  const status = jobStatus(result);
+  const heading = `## ${meta.title || "Antigravity Result"}${status === "completed" ? "" : ` (${status.toUpperCase()})`}`;
   const lines = [
     heading,
     `- **Engine:** \`${result.backend}\``,
+    `- **Job Status:** ${status} (exit ${result.exitStatus ?? 0})`,
+    result.errorMessage ? `- **Reason:** ${result.errorMessage}` : null,
+    result.resumeCount ? `- **Automatic Continuations:** ${result.resumeCount}` : null,
+    result.checkpoints?.length ? `- **Saved Recovery Checkpoints:** ${result.checkpoints.length}` : null,
     result.conversationId ? `- **Antigravity Conversation ID:** \`${result.conversationId}\`` : null,
     result.conversationId ? `- **Resume in CLI:** \`agy --conversation ${result.conversationId}\`` : null,
     meta.jobId ? `- **Job ID:** \`${meta.jobId}\`` : null,
@@ -46,10 +50,12 @@ export function renderTurnResult(result, meta = {}) {
       ? `- **Isolated Worktree Patch:** \`${meta.worktreePatchPath}\` *(apply cleanly via \`/agy:result ${meta.jobId} --apply-worktree\`)*`
       : null,
     meta.worktreeDiffStat ? `- **Worktree Diff Summary:** \`${meta.worktreeDiffStat}\`` : null,
+    meta.retainedWorktreePath ? `- **Retained Worktree for Recovery:** \`${meta.retainedWorktreePath}\`` : null,
     meta.mediaReportPath ? `- **Full Media Transcript Archive:** \`${meta.mediaReportPath}\`` : null,
     result.touchedFiles?.length
       ? `- **Touched Files (${result.touchedFiles.length}):** ${result.touchedFiles.map((f) => `\`${f}\``).join(", ")}`
       : null,
+    result.fileVerification?.length ? `- **Observed File State:** ${result.fileVerification.map((file) => `${file.path} (${file.state})`).join(", ")}` : null,
     "",
     result.finalMessage || "(No output returned)"
   ].filter((x) => x !== null);
@@ -58,13 +64,16 @@ export function renderTurnResult(result, meta = {}) {
 
 export function renderTransferResult(payload) {
   const hasConversation = Boolean(payload.conversationId && payload.conversationId !== "null");
-  const failed = (Number(payload.status ?? 0) !== 0 && !hasConversation) || !hasConversation;
+  const failed = Number(payload.status ?? 0) !== 0 || !hasConversation;
 
   if (failed) {
     const failLines = [
       `## Google Antigravity Transfer Failed`,
       `- **Attempted Engine:** \`${payload.backend}\``,
-      `- **Status:** No Antigravity conversation was created (\`exit ${payload.status ?? 1}\`)`,
+      `- **Status:** ${hasConversation ? payload.jobStatus || "failed" : "No Antigravity conversation was created"} (\`exit ${payload.status ?? 1}\`)`,
+      hasConversation ? `- **Antigravity Conversation ID:** \`${payload.conversationId}\`` : null,
+      payload.errorMessage ? `- **Reason:** ${payload.errorMessage}` : null,
+      payload.touchedFiles?.length ? `- **Partial Files:** ${payload.touchedFiles.join(", ")}` : null,
       payload.handoffPath ? `- **Saved Session Archive (preserved):** \`${payload.handoffPath}\`` : null,
       "",
       "### Error Details",
@@ -75,7 +84,8 @@ export function renderTransferResult(payload) {
   }
 
   const lines = [
-    `## Claude Session Transferred to Google Antigravity`,
+    `## Claude Session ${payload.completionVerified === false ? "Dispatched" : "Transferred"} to Google Antigravity`,
+    payload.completionVerified === false ? "- **Status:** dispatched; completion has not been verified." : null,
     `- **Engine:** \`${payload.backend}\`${payload.focusedUi ? " (Opened & focused in Antigravity 2.0 Desktop)" : ""}`,
     `- **Antigravity Conversation ID:** \`${payload.conversationId}\``,
     `- **Resume in Antigravity CLI:** \`agy --conversation ${payload.conversationId}\``,
@@ -178,7 +188,7 @@ export function renderStatusTable(jobs, reviewGateEnabled = false) {
     `| :--- | :--- | :--- | :--- | :--- | :--- |`
   ];
   for (const j of jobs.slice(0, 15)) {
-    const summary = escapeMarkdownCell(j.summary).slice(0, 64);
+    const summary = escapeMarkdownCell(j.errorMessage || j.summary).slice(0, 320);
     rows.push(
       `| \`${j.id}\` | ${j.kind} | **${j.status}** | ${j.phase || "-"} | ${j.conversationId ? `\`${j.conversationId}\`` : "-"} | ${summary} |`
     );

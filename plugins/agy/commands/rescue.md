@@ -20,5 +20,6 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" task-resume-candidate --j
   - `Continue current Antigravity conversation`
   - `Start a new Antigravity conversation`
   (Put `Continue... (Recommended)` first if the request sounds like a follow-up, otherwise `Start a new... (Recommended)` first, and append `--resume` or `--fresh` accordingly.)
-- If `--background` is present, either pass `--background` to `agy-companion.mjs task` or run the subagent in the background.
+- Use the companion's built-in `--background` launcher by default for long delegated work. Always forward `--background` when requested; never replace it with shell detachment or merely backgrounding the forwarding subagent.
+- Preserve `--timeout-ms`, `--max-resumes`, and repeated `--allowed-path` options. A launch acknowledgement only confirms startup; retain the job ID and status/result commands.
 - Return Antigravity's companion output verbatim to the user without paraphrasing.

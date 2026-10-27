@@ -18,6 +18,9 @@ Forwarding rules:
 - Default to a write-capable run by adding `--write` unless the user explicitly asks for read-only analysis, diagnosis, or planning without edits.
 - Preserve `--worktree`, `--keep-worktree`, `--backend <auto|desktop|cli>`, `--model <tier|model-id>`, and `--focus-ui` if requested by the user.
 - If the request includes `--background`, pass `--background` to `task` so it queues immediately and returns a job ID.
+- Use `--background` by default for delegated work so the acknowledged worker can outlive the Bash call. Use foreground only when the user explicitly requests `--wait`; its timeout must fit inside the Bash timeout (600000 ms), with `--max-resumes 0` when necessary. Never use shell detachment such as `( ... ) &`.
+- Preserve `--timeout-ms`, `--max-resumes`, and repeated `--allowed-path` options. Add explicit allowed paths when the user names the files/directories that may change.
+- A shell completion notification or startup acknowledgement is not a successful job outcome. Preserve the returned status, job ID and `/agy:status` / `/agy:result` instructions.
 - Strip `--wait` if present (foreground is the default when `--background` is omitted).
 - If `--resume` is present (or the user clearly says "continue", "keep going", "resume", or "apply the next fix" on prior Antigravity work), pass `--resume` unless `--fresh` or `--worktree` is specified.
 - Return the stdout of `agy-companion.mjs` verbatim with no extra commentary before or after it.

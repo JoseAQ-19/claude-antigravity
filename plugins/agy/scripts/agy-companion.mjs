@@ -18,6 +18,7 @@ import {
   getAntigravityStatus,
   resolveExecutionBackendAndValidateModel,
   runDualAntigravityTurn,
+  terminateProcessTree,
   SUPPORTED_CLI_MODELS,
   UNIFIED_MODEL_TIERS
 } from "./lib/agy-runtime.mjs";
@@ -26,6 +27,7 @@ import {
   resolveClaudeTranscriptPath
 } from "./lib/claude-session-parser.mjs";
 import { collectReviewContext } from "./lib/git.mjs";
+import { failureKind, isActiveJob, isWithin, jobStatus } from "./lib/job-outcome.mjs";
 import {
   buildMediaAnalysisBundle,
   buildPlanReviewBundle,
@@ -101,6 +103,9 @@ const SUBCOMMAND_HELP = {
     "  --model, -m <tier|model-id> Model tier (pro|flash|flash_lite) or concrete CLI model ID (with --backend cli)",
     "  --prompt-file <path>        Read prompt text from a file instead of positional arguments",
     "  --focus-ui                  Bring Antigravity 2.0 Desktop conversation into visual focus",
+    "  --timeout-ms <ms>           Time budget per desktop attempt / CLI invocation (default: 1200000)",
+    "  --max-resumes <0..5>        Automatic desktop timeout/step-limit continuations (default: 2)",
+    "  --allowed-path <path>      Restrict intended edit scope; repeat for multiple files/directories",
     "  --cwd, -C <dir>             Override target workspace directory",
     "  --json                      Emit structured JSON output",
     "  --help, -h                  Show this help message and exit without creating a job",
@@ -266,22 +271,37 @@ function findResumableJob(workspaceRoot, currentSessionOnly = false) {
       (j.kind === "task" || j.kind === "transfer" || j.kind === "media") &&
       j.conversationId &&
       j.conversationId !== "null" &&
-      j.status !== "queued" &&
-      j.status !== "running"
+      !isActiveJob(j) && j.status !== "dispatched"
   );
-  return eligible.find((j) => j.status === "completed") ?? eligible[0] ?? null;
+  return eligible[0] ?? null;
 }
 
-function spawnBackgroundWorker(workspaceRoot, jobId) {
-  const child = spawn(process.execPath, [SCRIPT_PATH, "job-worker", "--cwd", workspaceRoot, "--job-id", jobId], {
-    cwd: workspaceRoot,
-    env: process.env,
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true
-  });
+async function spawnBackgroundWorker(workspaceRoot, jobId, logFile) {
+  const fd = fs.openSync(logFile, "a");
+  let child;
+  try {
+    child = spawn(process.execPath, [SCRIPT_PATH, "job-worker", "--cwd", workspaceRoot, "--job-id", jobId], {
+      cwd: workspaceRoot,
+      env: process.env,
+      detached: true,
+      stdio: ["ignore", fd, fd],
+      windowsHide: true
+    });
+  } finally { fs.closeSync(fd); }
+  let launchError = null;
+  let closed = false;
+  child.on("error", (err) => { launchError = err; });
+  child.on("exit", () => { closed = true; });
   child.unref();
-  return child.pid ?? null;
+  const deadline = Date.now() + 10000;
+  do {
+    const stored = readJobFile(workspaceRoot, jobId);
+    if (stored?.startedAt) return stored;
+    if (launchError || closed) throw launchError || new Error("Background worker exited before acknowledging startup. Inspect the job log.");
+    await new Promise((r) => setTimeout(r, 50));
+  } while (Date.now() < deadline);
+  terminateProcessTree(child.pid);
+  throw new Error("Background worker did not acknowledge startup within 10s. Inspect the job log.");
 }
 
 async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
@@ -295,10 +315,26 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
   const onProgress = (ev) => {
     const msg = typeof ev === "string" ? ev : ev?.message;
     if (msg) appendJobLog(logFile, msg);
+    if (ev?.phase) {
+      const current = readJobFile(workspaceRoot, jobId);
+      writeJobFile(workspaceRoot, jobId, { ...current, phase: ev.phase });
+    }
   };
+  const onCheckpoint = (checkpoint) => {
+    const current = readJobFile(workspaceRoot, jobId);
+    const checkpointFile = `${logFile}.checkpoint.json`;
+    fs.writeFileSync(checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`, "utf8");
+    writeJobFile(workspaceRoot, jobId, { ...current, checkpointFile, checkpoint,
+      taskSummary: current.taskSummary || current.summary, fileVerification: checkpoint.fileVerification,
+      touchedFiles: checkpoint.touchedFiles, summary: checkpoint.reason, phase: "checkpoint" });
+    appendJobLog(logFile, `Checkpoint saved: ${checkpointFile}; ${checkpoint.reason}`);
+  };
+  const runtimeOptions = { timeoutMs: request.timeoutMs, maxResumes: request.maxResumes,
+    allowedPaths: request.allowedPaths, onCheckpoint };
 
   if (request.type === "transfer") {
     const turn = await runDualAntigravityTurn(workspaceRoot, {
+      ...runtimeOptions,
       prompt: request.prompt,
       title: request.conversationTitle,
       backend: request.backend || "auto",
@@ -311,6 +347,13 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
     });
     const payload = {
       status: turn.exitStatus,
+      jobStatus: jobStatus(turn),
+      errorMessage: turn.errorMessage,
+      failureKind: turn.failureKind,
+      fileVerification: turn.fileVerification,
+      completionVerified: turn.completionVerified,
+      resumeCount: turn.resumeCount,
+      checkpoints: turn.checkpoints,
       backend: turn.backend,
       conversationId: turn.conversationId || null,
       resumeCommand: turn.conversationId ? `agy --conversation ${turn.conversationId}` : null,
@@ -324,6 +367,7 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
     };
     const rendered = renderTransferResult(payload);
     return {
+      ...turn,
       exitStatus: turn.exitStatus,
       conversationId: turn.conversationId,
       backend: turn.backend,
@@ -337,15 +381,20 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
   let wtInfo = null;
   let wtChanges = null;
   let targetCwd = workspaceRoot;
+  let preserveWorktree = Boolean(request.keepWorktree);
 
   if (request.worktree) {
     wtInfo = createIsolatedWorktree(workspaceRoot, jobId);
     targetCwd = wtInfo.worktreePath;
+    preserveWorktree = true; // Preserve recovery files until execution and patch export are confirmed.
+    const current = readJobFile(workspaceRoot, jobId);
+    writeJobFile(workspaceRoot, jobId, { ...current, worktreePath: targetCwd });
     appendJobLog(logFile, `Created isolated git worktree at ${wtInfo.worktreePath}`);
   }
 
   try {
     const turn = await runDualAntigravityTurn(targetCwd, {
+      ...runtimeOptions,
       prompt: request.prompt,
       title: request.title,
       resumeConversationId: request.resumeConversationId || null,
@@ -360,6 +409,8 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
 
     if (wtInfo) {
       wtChanges = captureWorktreeChanges(workspaceRoot, wtInfo.worktreePath, jobId);
+      preserveWorktree = Boolean(request.keepWorktree || turn.completionVerified === false ||
+        ["timeout", "step_limit"].includes(turn.failureKind));
       if (wtChanges.changedFiles.length > 0) {
         turn.touchedFiles = wtChanges.changedFiles;
       }
@@ -367,6 +418,14 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
 
     const payload = {
       status: turn.exitStatus,
+      jobStatus: jobStatus(turn),
+      errorMessage: turn.errorMessage,
+      failureKind: turn.failureKind,
+      scopeViolations: turn.scopeViolations,
+      fileVerification: turn.fileVerification,
+      completionVerified: turn.completionVerified,
+      resumeCount: turn.resumeCount,
+      checkpoints: turn.checkpoints,
       backend: turn.backend,
       conversationId: turn.conversationId,
       rawOutput: turn.finalMessage,
@@ -379,6 +438,7 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
             worktreeDiffStat: wtChanges.diffStat
           }
         : {}),
+      ...(wtInfo && preserveWorktree ? { retainedWorktreePath: wtInfo.worktreePath } : {}),
       ...(request.mediaReportPath ? { mediaReportPath: request.mediaReportPath } : {})
     };
     const rendered = renderTurnResult(turn, {
@@ -386,9 +446,11 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
       jobId,
       worktreePatchPath: wtChanges?.patchPath || null,
       worktreeDiffStat: wtChanges?.diffStat || null,
+      retainedWorktreePath: wtInfo && preserveWorktree ? wtInfo.worktreePath : null,
       mediaReportPath: request.mediaReportPath || null
     });
     return {
+      ...turn,
       exitStatus: turn.exitStatus,
       conversationId: turn.conversationId,
       backend: turn.backend,
@@ -397,110 +459,79 @@ async function executeJobRequest(workspaceRoot, jobId, request, logFile) {
       rendered
     };
   } finally {
-    if (wtInfo && !request.keepWorktree) {
+    if (wtInfo && !preserveWorktree) {
       cleanupIsolatedWorktree(workspaceRoot, wtInfo.worktreePath);
     }
   }
 }
 
+function finishTrackedJob(workspaceRoot, jobId, execRes, logFile) {
+  const current = readJobFile(workspaceRoot, jobId);
+  if (current.status === "canceled") return current;
+  const status = jobStatus(execRes);
+  const completed = { ...current, status, phase: status === "completed" ? "done" : status,
+    exitStatus: execRes.exitStatus, conversationId: execRes.conversationId, backend: execRes.backend,
+    taskSummary: current.taskSummary || current.summary,
+    summary: execRes.errorMessage || shorten(execRes.finalMessage || current.summary, 240),
+    errorMessage: execRes.errorMessage || null, failureKind: execRes.failureKind || null,
+    touchedFiles: execRes.touchedFiles || [], fileVerification: execRes.fileVerification || [],
+    resumeCount: execRes.resumeCount || 0, checkpoints: execRes.checkpoints || [],
+    remoteStopped: execRes.remoteStopped, completionVerified: execRes.completionVerified,
+    pid: null, completedAt: nowIso(), result: execRes.payload, rendered: execRes.rendered };
+  appendJobLog(logFile, `Finished job (${status}): exitStatus=${execRes.exitStatus}, backend=${execRes.backend || "unknown"}, conversationId=${execRes.conversationId || "none"}, touchedFiles=${completed.touchedFiles.length}`);
+  if (completed.errorMessage) appendJobLog(logFile, `Reason: ${completed.errorMessage}`);
+  writeJobFile(workspaceRoot, jobId, completed);
+  upsertJob(workspaceRoot, completed);
+  return completed;
+}
+
+function failTrackedJob(workspaceRoot, jobId, err, logFile, kind) {
+  const current = readJobFile(workspaceRoot, jobId);
+  if (current?.status === "canceled") return current;
+  const message = err instanceof Error ? err.message : String(err);
+  const failed = { ...current, status: "failed", phase: "failed", exitStatus: 1, pid: null,
+    taskSummary: current?.taskSummary || current?.summary, summary: message,
+    errorMessage: message, failureKind: kind || failureKind(message), completedAt: nowIso() };
+  writeJobFile(workspaceRoot, jobId, failed);
+  upsertJob(workspaceRoot, failed);
+  appendJobLog(logFile, `Finished job (failed): exitStatus=1; ${message}`);
+  return failed;
+}
+
 async function runTrackedForeground(workspaceRoot, jobRecord, request, asJson) {
   const logFile = resolveJobLogFile(workspaceRoot, jobRecord.id);
-  fs.writeFileSync(logFile, "", "utf8");
-  appendJobLog(logFile, `Starting foreground ${jobRecord.kind}: ${jobRecord.title}`);
-
-  const running = {
-    ...jobRecord,
-    status: "running",
-    phase: "starting",
-    startedAt: nowIso(),
-    pid: process.pid,
-    logFile,
-    request
-  };
+  const running = { ...jobRecord, status: "running", phase: "starting", startedAt: nowIso(), pid: process.pid, logFile, request };
   writeJobFile(workspaceRoot, jobRecord.id, running);
   upsertJob(workspaceRoot, running);
-
+  appendJobLog(logFile, `Starting foreground ${jobRecord.kind}: ${jobRecord.title}`);
   try {
     const execRes = await executeJobRequest(workspaceRoot, jobRecord.id, request, logFile);
-    const finalStatus = execRes.exitStatus === 0 ? "completed" : "failed";
-    appendJobLog(
-      logFile,
-      `Finished job (${finalStatus}): exitStatus=${execRes.exitStatus}, backend=${execRes.backend || "unknown"}, conversationId=${execRes.conversationId || "none"}, touchedFiles=${(execRes.touchedFiles ?? []).length}`
-    );
-    const completed = {
-      ...readJobFile(workspaceRoot, jobRecord.id),
-      ...running,
-      status: finalStatus,
-      phase: finalStatus === "completed" ? "done" : "failed",
-      exitStatus: execRes.exitStatus,
-      conversationId: execRes.conversationId,
-      backend: execRes.backend,
-      touchedFiles: execRes.touchedFiles ?? [],
-      pid: null,
-      completedAt: nowIso(),
-      result: execRes.payload,
-      rendered: execRes.rendered
-    };
-    writeJobFile(workspaceRoot, jobRecord.id, completed);
-    upsertJob(workspaceRoot, {
-      id: jobRecord.id,
-      status: finalStatus,
-      phase: completed.phase,
-      exitStatus: execRes.exitStatus,
-      conversationId: execRes.conversationId,
-      backend: execRes.backend,
-      touchedFiles: execRes.touchedFiles ?? [],
-      pid: null,
-      completedAt: completed.completedAt
-    });
+    finishTrackedJob(workspaceRoot, jobRecord.id, execRes, logFile);
     emitOutput(execRes.payload, execRes.rendered, asJson);
-    if (execRes.exitStatus !== 0) process.exitCode = execRes.exitStatus;
+    process.exitCode = execRes.exitStatus;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    appendJobLog(logFile, `ERROR: ${msg}`);
-    writeJobFile(workspaceRoot, jobRecord.id, {
-      ...running,
-      status: "failed",
-      phase: "failed",
-      pid: null,
-      errorMessage: msg,
-      completedAt: nowIso()
-    });
-    upsertJob(workspaceRoot, { id: jobRecord.id, status: "failed", phase: "failed", pid: null, errorMessage: msg });
+    failTrackedJob(workspaceRoot, jobRecord.id, err, logFile);
     throw err;
   }
 }
 
-function enqueueBackground(workspaceRoot, jobRecord, request, asJson) {
+async function enqueueBackground(workspaceRoot, jobRecord, request, asJson) {
   const logFile = resolveJobLogFile(workspaceRoot, jobRecord.id);
-  fs.writeFileSync(logFile, "", "utf8");
-  appendJobLog(logFile, `Queued background ${jobRecord.kind}: ${jobRecord.title}`);
-
-  const queued = {
-    ...jobRecord,
-    status: "queued",
-    phase: "queued",
-    logFile,
-    request
-  };
+  const queued = { ...jobRecord, status: "queued", phase: "queued", queuedAt: nowIso(), logFile, request };
   writeJobFile(workspaceRoot, jobRecord.id, queued);
   upsertJob(workspaceRoot, queued);
-
-  const pid = spawnBackgroundWorker(workspaceRoot, jobRecord.id);
-  writeJobFile(workspaceRoot, jobRecord.id, { ...queued, pid });
-  upsertJob(workspaceRoot, { id: jobRecord.id, pid });
-
-  const payload = {
-    jobId: jobRecord.id,
-    status: "queued",
-    kind: jobRecord.kind,
-    title: jobRecord.title,
-    summary: jobRecord.summary,
-    worktreeIsolated: Boolean(request.worktree),
-    logFile
-  };
-  const wtNote = request.worktree ? " (isolated in clean git worktree — zero file collisions)" : "";
-  const rendered = `${jobRecord.title} started in background as \`${jobRecord.id}\`${wtNote}.\nCheck \`/agy:status ${jobRecord.id}\` for progress or \`/agy:result ${jobRecord.id}\` once complete.\n`;
+  appendJobLog(logFile, `Queued background ${jobRecord.kind}: ${jobRecord.title}`);
+  let started;
+  try {
+    started = await spawnBackgroundWorker(workspaceRoot, jobRecord.id, logFile);
+  } catch (err) {
+    failTrackedJob(workspaceRoot, jobRecord.id, err, logFile, "launch_error");
+    throw err;
+  }
+  const payload = { jobId: jobRecord.id, status: started.status, launchAcknowledged: true,
+    startedAt: started.startedAt, kind: jobRecord.kind, title: jobRecord.title,
+    summary: started.summary, worktreeIsolated: Boolean(request.worktree), logFile };
+  const rendered = `${jobRecord.title} started in background as \`${jobRecord.id}\` (startup acknowledged; status=${started.status}).\nUse \`/agy:status ${jobRecord.id} --wait\` and \`/agy:result ${jobRecord.id}\` to verify the job outcome.\n`;
   emitOutput(payload, rendered, asJson);
 }
 
@@ -509,57 +540,41 @@ async function handleJobWorker(argv) {
   const workspaceRoot = resolveWorkspaceRoot(options.cwd || process.cwd());
   const jobId = options["job-id"];
   const stored = readJobFile(workspaceRoot, jobId);
-  if (!stored?.request) return;
-
+  if (!stored?.request) throw new Error(`Missing request for worker job ${jobId}`);
+  if (stored.status !== "queued") throw new Error(`Job ${jobId} is already ${stored.status}`);
   const logFile = stored.logFile || resolveJobLogFile(workspaceRoot, jobId);
   const running = { ...stored, status: "running", phase: "starting", startedAt: nowIso(), pid: process.pid };
+  appendJobLog(logFile, `Starting background worker: pid=${process.pid}`);
   writeJobFile(workspaceRoot, jobId, running);
-  upsertJob(workspaceRoot, { id: jobId, status: "running", phase: "starting", pid: process.pid });
-
+  upsertJob(workspaceRoot, running);
   try {
     const execRes = await executeJobRequest(workspaceRoot, jobId, stored.request, logFile);
-    const finalStatus = execRes.exitStatus === 0 ? "completed" : "failed";
-    appendJobLog(
-      logFile,
-      `Finished job (${finalStatus}): exitStatus=${execRes.exitStatus}, backend=${execRes.backend || "unknown"}, conversationId=${execRes.conversationId || "none"}, touchedFiles=${(execRes.touchedFiles ?? []).length}`
-    );
-    writeJobFile(workspaceRoot, jobId, {
-      ...readJobFile(workspaceRoot, jobId),
-      status: finalStatus,
-      phase: finalStatus === "completed" ? "done" : "failed",
-      exitStatus: execRes.exitStatus,
-      conversationId: execRes.conversationId,
-      backend: execRes.backend,
-      touchedFiles: execRes.touchedFiles ?? [],
-      pid: null,
-      completedAt: nowIso(),
-      result: execRes.payload,
-      rendered: execRes.rendered
-    });
-    upsertJob(workspaceRoot, {
-      id: jobId,
-      status: finalStatus,
-      phase: finalStatus === "completed" ? "done" : "failed",
-      exitStatus: execRes.exitStatus,
-      conversationId: execRes.conversationId,
-      backend: execRes.backend,
-      touchedFiles: execRes.touchedFiles ?? [],
-      pid: null,
-      completedAt: nowIso()
-    });
+    finishTrackedJob(workspaceRoot, jobId, execRes, logFile);
+    process.exitCode = execRes.exitStatus;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    appendJobLog(logFile, `WORKER ERROR: ${msg}`);
-    writeJobFile(workspaceRoot, jobId, {
-      ...readJobFile(workspaceRoot, jobId),
-      status: "failed",
-      phase: "failed",
-      pid: null,
-      errorMessage: msg,
-      completedAt: nowIso()
-    });
-    upsertJob(workspaceRoot, { id: jobId, status: "failed", phase: "failed", pid: null, errorMessage: msg });
+    failTrackedJob(workspaceRoot, jobId, err, logFile);
+    process.exitCode = 1;
   }
+}
+
+function reconcileJob(workspaceRoot, stored) {
+  if (!stored) return stored;
+  if (isActiveJob(stored)) {
+    let alive = false;
+    if (stored.pid) {
+      try { process.kill(stored.pid, 0); alive = true; } catch (err) { alive = err.code === "EPERM"; }
+    }
+    const expiredQueue = stored.status === "queued" && Date.now() - Date.parse(stored.queuedAt || stored.createdAt || 0) > 30000;
+    if ((stored.pid && !alive) || (!stored.pid && (stored.status === "running" || expiredQueue))) {
+      return failTrackedJob(workspaceRoot, stored.id,
+        new Error(stored.startedAt ? "Worker exited without recording a terminal job state; inspect files and conversation before resuming." : "Worker never acknowledged startup."),
+        stored.logFile, "worker_lost");
+    }
+  }
+  // Upgrade diagnostics for records created by older plugin versions.
+  const errorMessage = stored.errorMessage || stored.result?.errorMessage ||
+    (stored.status === "failed" ? stored.result?.rawOutput || stored.result?.finalMessage : null);
+  return errorMessage ? { ...stored, errorMessage, summary: errorMessage } : stored;
 }
 
 async function handleSetup(argv) {
@@ -616,9 +631,22 @@ async function handleTaskResumeCandidate(argv) {
   emitOutput(payload, `${JSON.stringify(payload)}\n`, Boolean(options.json));
 }
 
+function executionSettings(options, workspaceRoot) {
+  const timeoutMs = options["timeout-ms"] == null ? 1200000 : Number(options["timeout-ms"]);
+  const maxResumes = options["max-resumes"] == null ? 2 : Number(options["max-resumes"]);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("--timeout-ms must be a positive integer.");
+  if (!Number.isInteger(maxResumes) || maxResumes < 0 || maxResumes > 5) throw new Error("--max-resumes must be an integer from 0 to 5.");
+  const allowedPaths = options["allowed-path"] || [];
+  if (allowedPaths.some((p) => !p || !isWithin(workspaceRoot, path.resolve(workspaceRoot, p)))) {
+    throw new Error("Each --allowed-path must be inside the assigned workspace.");
+  }
+  return { timeoutMs, maxResumes, allowedPaths: allowedPaths.map((p) => path.relative(workspaceRoot, path.resolve(workspaceRoot, p)) || ".") };
+}
+
 async function handleTask(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "backend", "model", "conversation", "prompt-file"],
+    valueOptions: ["cwd", "backend", "model", "timeout-ms", "max-resumes", "conversation", "prompt-file", "allowed-path"],
+    repeatableOptions: ["allowed-path"],
     booleanOptions: [
       "json",
       "background",
@@ -653,8 +681,11 @@ async function handleTask(argv) {
     if (!prev?.conversationId) {
       throw new Error("No previous Antigravity conversation found for this workspace to resume.");
     }
+    if (prev.request?.worktree) throw new Error(`The previous task used an isolated worktree (${prev.worktreePath}). Inspect it or apply its saved patch before starting another task.`);
     resumeConversationId = prev.conversationId;
   }
+
+  if (options.worktree && resumeConversationId) throw new Error("--worktree cannot resume an existing conversation; start a fresh isolated task.");
 
   if (!prompt && resumeConversationId) {
     prompt = "Continue from the current conversation state. Execute the next highest-value pending step and verify it.";
@@ -663,6 +694,7 @@ async function handleTask(argv) {
     throw new Error("Provide a task prompt for Antigravity (or use --resume).");
   }
 
+  executionSettings(options, workspaceRoot);
   await resolveExecutionBackendAndValidateModel(workspaceRoot, {
     backend: options.backend,
     model: options.model
@@ -689,6 +721,7 @@ async function handleTask(argv) {
     resumeConversationId,
     backend: options.backend || "auto",
     model: options.model || "pro",
+    ...executionSettings(options, workspaceRoot),
     write: Boolean(options.write || options.worktree),
     worktree: Boolean(options.worktree),
     keepWorktree: Boolean(options["keep-worktree"]),
@@ -696,7 +729,7 @@ async function handleTask(argv) {
   };
 
   if (options.background) {
-    enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
+    await enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
   } else {
     await runTrackedForeground(workspaceRoot, jobRecord, request, Boolean(options.json));
   }
@@ -704,7 +737,7 @@ async function handleTask(argv) {
 
 async function handleTransfer(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "source", "backend", "model"],
+    valueOptions: ["cwd", "source", "backend", "model", "timeout-ms", "max-resumes"],
     booleanOptions: ["json", "background", "wait", "handoff-only", "no-focus"],
     aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
@@ -718,6 +751,7 @@ async function handleTransfer(argv) {
   const executeNextStep = !options["handoff-only"];
   const focusUi = !options["no-focus"];
 
+  executionSettings(options, workspaceRoot);
   await resolveExecutionBackendAndValidateModel(workspaceRoot, {
     backend: options.backend,
     model: options.model
@@ -746,12 +780,13 @@ async function handleTransfer(argv) {
     prompt: bundle.prompt,
     backend: options.backend || "auto",
     model: options.model || "pro",
+    ...executionSettings(options, workspaceRoot),
     executeNextStep,
     focusUi
   };
 
   if (options.background) {
-    enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
+    await enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
   } else {
     await runTrackedForeground(workspaceRoot, jobRecord, request, Boolean(options.json));
   }
@@ -774,13 +809,14 @@ async function handlePull(argv) {
 
 async function handleMedia(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "backend", "model"],
+    valueOptions: ["cwd", "backend", "model", "timeout-ms", "max-resumes"],
     booleanOptions: ["json", "background", "wait", "no-correlate", "focus-ui"],
     aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
 
+  executionSettings(options, workspaceRoot);
   await resolveExecutionBackendAndValidateModel(workspaceRoot, {
     backend: options.backend,
     model: options.model
@@ -806,12 +842,13 @@ async function handleMedia(argv) {
     mediaReportPath: bundle.fullReportPath,
     backend: options.backend || "auto",
     model: options.model || "pro",
+    ...executionSettings(options, workspaceRoot),
     write: true,
     focusUi: Boolean(options["focus-ui"])
   };
 
   if (options.background) {
-    enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
+    await enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
   } else {
     await runTrackedForeground(workspaceRoot, jobRecord, request, Boolean(options.json));
   }
@@ -819,7 +856,7 @@ async function handleMedia(argv) {
 
 async function handleReview(argv, adversarial = false) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "base", "scope", "backend", "model"],
+    valueOptions: ["cwd", "base", "scope", "backend", "model", "timeout-ms", "max-resumes"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
@@ -827,6 +864,7 @@ async function handleReview(argv, adversarial = false) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   const focusText = positionals.join(" ").trim();
 
+  executionSettings(options, workspaceRoot);
   await resolveExecutionBackendAndValidateModel(workspaceRoot, {
     backend: options.backend,
     model: options.model
@@ -866,12 +904,13 @@ async function handleReview(argv, adversarial = false) {
     title,
     backend: options.backend || "auto",
     model: options.model || "pro",
+    ...executionSettings(options, workspaceRoot),
     write: false,
     focusUi: false
   };
 
   if (options.background) {
-    enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
+    await enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
   } else {
     await runTrackedForeground(workspaceRoot, jobRecord, request, Boolean(options.json));
   }
@@ -879,13 +918,14 @@ async function handleReview(argv, adversarial = false) {
 
 async function handleReviewPlan(argv) {
   const { options, positionals } = parseArgs(argv, {
-    valueOptions: ["cwd", "plan", "backend", "model"],
+    valueOptions: ["cwd", "plan", "backend", "model", "timeout-ms", "max-resumes"],
     booleanOptions: ["json", "background", "wait"],
     aliasMap: { C: "cwd", m: "model", b: "backend" }
   });
   const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
   const workspaceRoot = resolveWorkspaceRoot(cwd);
 
+  executionSettings(options, workspaceRoot);
   await resolveExecutionBackendAndValidateModel(workspaceRoot, {
     backend: options.backend,
     model: options.model
@@ -921,12 +961,13 @@ async function handleReviewPlan(argv) {
     title: bundle.conversationTitle,
     backend: options.backend || "auto",
     model: options.model || "pro",
+    ...executionSettings(options, workspaceRoot),
     write: false,
     focusUi: false
   };
 
   if (options.background) {
-    enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
+    await enqueueBackground(workspaceRoot, jobRecord, request, Boolean(options.json));
   } else {
     await runTrackedForeground(workspaceRoot, jobRecord, request, Boolean(options.json));
   }
@@ -1051,11 +1092,11 @@ async function handleStatus(argv) {
 
   if (jobId) {
     const deadline = Date.now() + (Number(options["timeout-ms"]) || 240000);
-    let stored = readJobFile(workspaceRoot, jobId);
+    let stored = reconcileJob(workspaceRoot, readJobFile(workspaceRoot, jobId));
     if (!stored) throw new Error(`Job not found: ${jobId}`);
     while (options.wait && (stored.status === "queued" || stored.status === "running") && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 1500));
-      stored = readJobFile(workspaceRoot, jobId) ?? stored;
+      stored = reconcileJob(workspaceRoot, readJobFile(workspaceRoot, jobId)) ?? stored;
     }
     const logTail =
       stored.logFile && fs.existsSync(stored.logFile)
@@ -1066,19 +1107,25 @@ async function handleStatus(argv) {
         `## Job \`${stored.id}\` — **${stored.status}**`,
         `- **Title:** ${stored.title}`,
         `- **Phase:** ${stored.phase || "-"}`,
+        stored.startedAt ? `- **Started At:** ${stored.startedAt}` : null,
+        stored.completedAt ? `- **Finished At:** ${stored.completedAt}` : null,
         stored.exitStatus != null ? `- **Exit Code:** \`${stored.exitStatus}\`` : null,
         stored.conversationId ? `- **Antigravity Conversation ID:** \`${stored.conversationId}\`` : null,
         stored.errorMessage ? `- **Error:** ${stored.errorMessage}` : null,
+        stored.touchedFiles?.length ? `- **Detected Files:** ${stored.touchedFiles.join(", ")}` : null,
+        stored.checkpointFile ? `- **Recovery Checkpoint:** ${stored.checkpointFile}` : null,
         logTail ? `\n### Recent Log\n\`\`\`text\n${logTail}\n\`\`\`` : null
       ]
         .filter(Boolean)
         .join("\n") + "\n";
     emitOutput(stored, rendered, Boolean(options.json));
+    if (options.wait) process.exitCode = isActiveJob(stored) || stored.status === "dispatched" ? 124 :
+      stored.exitStatus ?? (stored.status === "completed" ? 0 : stored.status === "canceled" ? 130 : 1);
     return;
   }
 
   const sessionId = process.env[SESSION_ID_ENV] || null;
-  const jobs = listJobs(workspaceRoot).filter((j) => options.all || !sessionId || j.sessionId === sessionId);
+  const jobs = listJobs(workspaceRoot).map((j) => reconcileJob(workspaceRoot, j)).filter((j) => options.all || !sessionId || j.sessionId === sessionId);
   emitOutput(
     { jobs, reviewGateEnabled: Boolean(config.stopReviewGate) },
     renderStatusTable(jobs, config.stopReviewGate),
@@ -1095,7 +1142,7 @@ async function handleResult(argv) {
   const workspaceRoot = resolveWorkspaceRoot(options.cwd || process.cwd());
   const requestedId = positionals[0] || listJobs(workspaceRoot)[0]?.id;
   if (!requestedId) throw new Error("No jobs recorded in this workspace yet.");
-  const stored = readJobFile(workspaceRoot, requestedId);
+  const stored = reconcileJob(workspaceRoot, readJobFile(workspaceRoot, requestedId));
   if (!stored) throw new Error(`Job not found: ${requestedId}`);
 
   if (options["apply-worktree"]) {
@@ -1131,12 +1178,14 @@ async function handleCancel(argv) {
   if (!stored) throw new Error(`Job not found: ${targetId}`);
 
   const cancelRes = await cancelAntigravityJob(workspaceRoot, stored);
-  const updated = { ...stored, status: "canceled", phase: "canceled", pid: null, completedAt: nowIso() };
+  const updated = { ...stored, status: "canceled", phase: "canceled", exitStatus: 130, pid: null, completedAt: nowIso() };
+  appendJobLog(stored.logFile, "Finished job (canceled): exitStatus=130; cancellation requested.");
   writeJobFile(workspaceRoot, targetId, updated);
   upsertJob(workspaceRoot, {
     id: targetId,
     status: "canceled",
     phase: "canceled",
+    exitStatus: 130,
     pid: null,
     completedAt: updated.completedAt
   });

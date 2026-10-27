@@ -170,6 +170,31 @@ Keep `CLAUDE.md` and Antigravity's `AGENTS.md` + `.agents/rules/claude-memory-sy
 
 ---
 
+## Reliable jobs and recovery (v1.1.3)
+
+Use the plugin's own `--background` launcher for long jobs. It records the queue, waits for the worker to acknowledge startup, and returns its job ID. A shell notifier saying “completed” only describes the shell command; check the saved job outcome:
+
+```bash
+node plugins/agy/scripts/agy-companion.mjs task --background --write --allowed-path src --allowed-path tests "Fix the reported bug and verify it"
+node plugins/agy/scripts/agy-companion.mjs status <job-id> --wait --json
+node plugins/agy/scripts/agy-companion.mjs result <job-id>
+```
+
+Desktop attempts have a **20-minute time budget**, not a plugin-imposed step count. On a timeout or an explicit executor step-limit error, the runtime saves a checkpoint, confirms the previous invocation has stopped, and sends a follow-up in the **same conversation and worktree**. The default allows two continuations. Job commands accept `--timeout-ms <ms>` and `--max-resumes <0..5>`; use `--max-resumes 0` to disable automatic continuation. Quota errors retain the provider's reset message and do not retry or change models.
+
+| Status | Meaning |
+| :--- | :--- |
+| `queued` / `running` | Work has been queued / the worker acknowledged startup. |
+| `completed` | The invocation ended successfully. Inspect changes and relevant project checks to assess correctness. |
+| `failed` | Execution, quota, write, scope or launch error; Summary contains the reason. Partial files are preserved. |
+| `interrupted` | Timeout/step-limit recovery could not finish; checkpoint and files remain available. |
+| `dispatched` | Desktop accepted the task, but monitoring could not verify completion. Inspect the Desktop conversation. |
+| `canceled` | Cancellation was recorded. |
+
+`status <id> --wait` returns the saved exit code (124 for interruption or an expired wait). Startup acknowledgement is not task completion. A command that the shell never launches cannot create plugin records; use `--background` directly instead of `( ... ) &`.
+
+`task --allowed-path <path>` accepts repeated workspace-relative files/directories. The runtime adds prompt boundaries and detects reported/snapshotted out-of-scope edits after execution; it preserves them for inspection and fails the job. These checks are **not an OS sandbox**, cannot attribute simultaneous edits by another process, and Git snapshots do not observe ignored files or arbitrary writes outside the workspace. Use `--worktree` to separate concurrent work. File fingerprints verify the observed on-disk state, not that the implementation meets the task. Interrupted or unmonitored worktrees are kept; their path and any exported patch appear in the job record. Automatic continuation stays in that worktree; inspect/apply the patch before starting a new task from the main workspace.
+
 ## 🏗️ Dual-Engine Architecture
 
 ```mermaid

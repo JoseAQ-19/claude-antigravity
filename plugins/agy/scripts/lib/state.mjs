@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +9,16 @@ export const TRANSCRIPT_PATH_ENV = "AGY_COMPANION_TRANSCRIPT_PATH";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT = path.join(os.tmpdir(), "agy-companion");
 const MAX_JOBS = 50;
+
+function writeJsonAtomic(file, payload) {
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.renameSync(temp, file);
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp);
+  }
+}
 
 export function nowIso() {
   return new Date().toISOString();
@@ -112,7 +122,7 @@ export function saveState(cwd, state) {
     config: { ...defaultState().config, ...(state.config ?? {}) },
     jobs
   };
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(next, null, 2)}\n`, "utf8");
+  writeJsonAtomic(resolveStateFile(cwd), next);
   return next;
 }
 
@@ -132,7 +142,7 @@ export function resolveJobLogFile(cwd, jobId) {
 
 export function writeJobFile(cwd, jobId, payload) {
   const file = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  writeJsonAtomic(file, { ...payload, updatedAt: nowIso() });
   return file;
 }
 
@@ -155,7 +165,18 @@ export function upsertJob(cwd, patch) {
 }
 
 export function listJobs(cwd) {
-  return loadState(cwd).jobs;
+  const jobs = new Map(loadState(cwd).jobs.map((job) => [job.id, job]));
+  // Individual job files are authoritative; concurrent workers may race on the index.
+  const dir = resolveJobsDir(cwd);
+  if (fs.existsSync(dir)) {
+    for (const entry of fs.readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+      try {
+        const job = JSON.parse(fs.readFileSync(path.join(dir, entry), "utf8"));
+        if (job.id) jobs.set(job.id, { ...jobs.get(job.id), ...job });
+      } catch {} // An old/corrupt record must not hide other jobs.
+    }
+  }
+  return [...jobs.values()].sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""))).slice(0, MAX_JOBS);
 }
 
 export function getConfig(cwd) {
